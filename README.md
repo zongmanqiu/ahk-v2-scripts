@@ -5,9 +5,9 @@ AutoHotkey v2 独立运行。脚本与宿主**分离**——本仓库是脚本�
 
 - AHKDeck：面向 Windows x64 的 AutoHotkey v2 脚本工作台，集成脚本管理、编辑运行、日志查看与 MCP AI 接入。
 
-> 脚本仓库：[Gitee](https://gitee.com/qiuzongman/ahk-v2-scripts) ｜ [GitHub](https://github.com/zongmanqiu/ahk-v2-scripts)
+> 脚本仓库: [Gitee](https://gitee.com/qiuzongman/ahk-v2-scripts) ｜ [GitHub](https://github.com/zongmanqiu/ahk-v2-scripts)
 >
-> AHKDeck 仓库：[Gitee](https://gitee.com/qiuzongman/AHKDeck) ｜ [GitHub](https://github.com/zongmanqiu/AHKDeck)
+> AHKDeck 仓库: [Gitee](https://gitee.com/qiuzongman/AHKDeck) ｜ [GitHub](https://github.com/zongmanqiu/AHKDeck)
 
 ## 脚本列表
 
@@ -38,7 +38,7 @@ AutoHotkey v2 独立运行。脚本与宿主**分离**——本仓库是脚本�
 | 某个脚本各版本改了什么 | 该脚本文件夹下的 `info/HISTORY.md`（只增不改） |
 | 目录怎么组织、头部块怎么写、注释/版本/测试/出货规矩 | [`开发指南.md`](开发指南.md) |
 | 脚本机器清单（版本/作者/raw 下载地址，供宿主以后下载用） | [`scripts.json`](scripts.json)（由 `tools/make_index.py` 生成） |
-| 复刻/移植了哪些项目、来源与许可 | [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) |
+| 某个脚本复刻/移植了哪个项目、来源与许可 | 该脚本头部注释与 `info/README.md` |
 | 本仓库许可（AGPL-3.0 全文） | [`LICENSE`](LICENSE) |
 
 ## 许可证
