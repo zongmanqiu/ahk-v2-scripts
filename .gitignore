@@ -1,0 +1,10 @@
+# 脚本运行时产物（写在脚本旁，不进仓库）
+*.ini
+history/
+backup_*
+
+# 杂项
+__pycache__/
+*.pyc
+Thumbs.db
+Desktop.ini
