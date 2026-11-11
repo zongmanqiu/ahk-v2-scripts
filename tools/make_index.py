@@ -3,7 +3,7 @@
 
 形状照 rupix decoders.json/plugins.json：顶层数组、一项一脚本，无 id 包裹层、无 sha256。
 关键差异：我们是单个 .ahk 文本（不是 zip 包），下载地址用 raw 文本地址，按脚本名自动推导，
-不建 release/tag。字段 = 头部 11 必填的直接投影 + path/size/gitee/github 四个计算字段。
+不建 release/tag。字段 = 头部 11 必填的直接投影 + path/size_kb/gitee/github 四个计算字段。
 
 用法：
     python tools/make_index.py            # 扫脚本头部 → 写 scripts.json
@@ -31,7 +31,7 @@ REQUIRED = ("name", "namespace", "version", "description", "author", "date",
             "license", "homepageURL", "requires", "host", "entry")
 # 清单字段顺序 = 契约，改顺序会让 git diff 难读。
 FIELDS = ("name", "version", "date", "description", "author", "license",
-          "requires", "host", "entry", "path", "size", "gitee", "github")
+          "requires", "host", "entry", "path", "size_kb", "gitee", "github")
 # gitee owner → github owner：照 rupix，主机名和 owner 一起换（只换主机名会 404）。
 GITHUB_OWNER = {"qiuzongman": "zongmanqiu"}
 BRANCH = "main"  # 取最新，非版本锁定（单文本脚本不建 release/tag）
@@ -101,7 +101,7 @@ def build_entry(ahk: pathlib.Path, fields: dict, base: pathlib.Path) -> dict:
         "host": fields["host"],
         "entry": fields["entry"],
         "path": rel,
-        "size": ahk.stat().st_size,
+        "size_kb": round(ahk.stat().st_size / 1024, 1),
         "gitee": f"https://gitee.com/{owner}/{repo}/raw/{BRANCH}/{enc}",
         "github": f"https://raw.githubusercontent.com/{gh_owner}/{repo}/{BRANCH}/{enc}",
     }
@@ -212,12 +212,21 @@ def selftest() -> int:
 
     check(GITHUB_OWNER.get("qiuzongman") == "zongmanqiu", "T11 owner 映射 qiuzongman→zongmanqiu")
 
+    with tempfile.TemporaryDirectory() as td:
+        base = pathlib.Path(td)
+        sd = base / "scripts"
+        (sd / "双击防抖").mkdir(parents=True)
+        ahk = sd / "双击防抖" / "双击防抖.ahk"
+        ahk.write_bytes(b"x" * 2048)  # 2.0 KB
+        e = build_entry(ahk, fields, base)
+        check(e.get("size_kb") == 2.0, f"T12 2048 B 应换算为 2.0 KB，实得 {e.get('size_kb')!r}")
+
     if fails:
         print("SELFTEST FAIL：")
         for f in fails:
             print("  - " + f)
         return 1
-    print("SELFTEST PASS（11 组钉子全绿）")
+    print("SELFTEST PASS（12 组钉子全绿）")
     return 0
 
 
@@ -256,7 +265,7 @@ def main(argv=None) -> int:
     out.write_text(text, encoding="utf-8", newline="\n")
     print(f"写入 {out}（{len(entries)} 个脚本，{len(text.encode('utf-8'))} B）")
     for e in entries:
-        print(f"  {e['name']}  {e['version']}  {e['date']}  {e['size']} B")
+        print(f"  {e['name']}  {e['version']}  {e['date']}  {e['size_kb']} KB")
     return 0
 
 
