@@ -1,0 +1,47 @@
+[
+  {
+    "name": "双击防抖",
+    "version": "1.0.0",
+    "date": "2026-11-11",
+    "description": "用低级鼠标钩子拦截间隔过短的左键双击，间隔可在托盘设置（10~500 ms）",
+    "author": "邱宗满",
+    "license": "AGPL-3.0",
+    "requires": "AutoHotkey v2.0",
+    "host": "AHKDeck 0.2.2+（亦可独立运行）",
+    "entry": "托盘菜单「设置」；配置存于脚本旁同名 .ini",
+    "path": "scripts/双击防抖/双击防抖.ahk",
+    "size": 3463,
+    "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/main/scripts/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96.ahk",
+    "github": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/main/scripts/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96.ahk"
+  },
+  {
+    "name": "夜灯",
+    "version": "1.0.1",
+    "date": "2026-11-11",
+    "description": "滑块调屏幕色温（GammaRamp），并同步写入 Windows 夜间模式设置",
+    "author": "邱宗满",
+    "license": "AGPL-3.0",
+    "requires": "AutoHotkey v2.0",
+    "host": "AHKDeck 0.2.2+（亦可独立运行）",
+    "entry": "托盘菜单「夜灯调整」",
+    "path": "scripts/夜灯/夜灯.ahk",
+    "size": 12819,
+    "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/main/scripts/%E5%A4%9C%E7%81%AF/%E5%A4%9C%E7%81%AF.ahk",
+    "github": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/main/scripts/%E5%A4%9C%E7%81%AF/%E5%A4%9C%E7%81%AF.ahk"
+  },
+  {
+    "name": "打开方式清理",
+    "version": "1.2.0",
+    "date": "2026-11-11",
+    "description": "扫描 Windows「打开方式」相关的 13 处注册表位置，列出并清理失效残留",
+    "author": "邱宗满",
+    "license": "AGPL-3.0",
+    "requires": "AutoHotkey v2.0",
+    "host": "AHKDeck 0.2.2+（亦可独立运行）",
+    "entry": "托盘菜单「打开方式清理」；--report / --selftest 为无 GUI 分支",
+    "path": "scripts/打开方式清理/打开方式清理.ahk",
+    "size": 45161,
+    "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/main/scripts/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86.ahk",
+    "github": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/main/scripts/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86.ahk"
+  }
+]

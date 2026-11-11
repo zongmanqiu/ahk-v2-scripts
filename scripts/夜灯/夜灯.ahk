@@ -1,7 +1,7 @@
 ; ==UserScript==
 ; @name         夜灯
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.0.0
+; @version      1.0.1
 ; @description  滑块调屏幕色温（GammaRamp），并同步写入 Windows 夜间模式设置
 ; @author       邱宗满
 ; @date         2026-11-11
@@ -9,11 +9,11 @@
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
 ; @host         AHKDeck 0.2.2+（亦可独立运行）
-; @entry        托盘菜单「夜灯调整」；热键 Ctrl+Alt+Shift+N
+; @entry        托盘菜单「夜灯调整」
 ; ==/UserScript==
 ;
 ; 夜灯：用滑块调屏幕色温，并同步进 Windows 夜间模式的 CloudStore 值。
-; 入口：托盘菜单「夜灯调整」（宿主内由宿主镜像，独立运行显示自己的图标）；热键 Ctrl+Alt+Shift+N。
+; 入口：托盘菜单「夜灯调整」（宿主内由宿主镜像，独立运行显示自己的图标）。全局热键交给 AHKDeck 指派，脚本不自设。
 ; 纯 AHK v2：GammaRamp 走 gdi32，注册表走 advapi32，不依赖外部 exe。
 
 #Requires AutoHotkey v2.0
@@ -432,8 +432,6 @@ A_IconTip := "夜灯"
 ; 宿主会镜像托盘菜单；独立运行才显示自己的图标。
 if !InStr(A_AhkPath, "AHKDeck.exe")
     A_IconHidden := false
-
-^!+n::ShowPanel()
 
 ; 首次运行为便于观察直接弹面板；不需要可删掉下一行。
 SetTimer(() => ShowPanel(), -600)
