@@ -1,10 +1,10 @@
 ; ==UserScript==
 ; @name         夜灯
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.0.1
+; @version      1.0.2
 ; @description  滑块调屏幕色温（GammaRamp），并同步写入 Windows 夜间模式设置
 ; @author       邱宗满
-; @date         2026-11-11
+; @date         2026-11-12
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -432,6 +432,11 @@ A_IconTip := "夜灯"
 ; 宿主会镜像托盘菜单；独立运行才显示自己的图标。
 if !InStr(A_AhkPath, "AHKDeck.exe")
     A_IconHidden := false
+
+; 入口只有托盘菜单，没有热键、没有常驻定时器，靠面板这个窗口撑命；面板一关脚本就自行退出。
+; 内核只把「热键/热字串、持久标记、启用的定时器、剪贴板监视、InputHook、可见 GUI」当作常驻理由，
+; 往 A_TrayMenu 加项不算，所以这里显式声明常驻。
+Persistent(true)
 
 ; 首次运行为便于观察直接弹面板；不需要可删掉下一行。
 SetTimer(() => ShowPanel(), -600)
