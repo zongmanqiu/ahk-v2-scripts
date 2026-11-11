@@ -3,12 +3,12 @@
 
 形状照 rupix decoders.json/plugins.json：顶层数组、一项一脚本，无 id 包裹层、无 sha256。
 关键差异：我们是单个 .ahk 文本（不是 zip 包），下载地址用 raw 文本地址，按脚本名自动推导，
-不建 release/tag。字段 = 头部 11 必填的直接投影 + path/size_kb/gitee/github 四个计算字段。
+钉里程碑 tag（不建 release）。字段 = 头部 11 必填的直接投影 + path/size_kb/gitee/github 四个计算字段。
 
 用法：
     python tools/make_index.py            # 扫脚本头部 → 写 scripts.json
     python tools/make_index.py --check    # 只校验 + 与现清单比对，漂移/缺字段 exit 1（门禁用）
-    python tools/make_index.py --selftest # 自证钉子（缺必填必报错、raw 地址逐字符、扫 0 判失败）
+    python tools/make_index.py --selftest # 自证钉子（缺必填必报错、raw 钉 tag 逐字符、size 量 LF、扫 0 判失败）
 
 清单是生成物，手改无意义：要改信息去改脚本头部。契约详见 开发指南.md §7.1。
 """
@@ -34,7 +34,7 @@ FIELDS = ("name", "version", "date", "description", "author", "license",
           "requires", "host", "entry", "path", "size_kb", "gitee", "github")
 # gitee owner → github owner：照 rupix，主机名和 owner 一起换（只换主机名会 404）。
 GITHUB_OWNER = {"qiuzongman": "zongmanqiu"}
-BRANCH = "main"  # 取最新，非版本锁定（单文本脚本不建 release/tag）
+TAG = "2026-11-11"  # raw 地址钉里程碑 tag：版本稳定、与远端分支名（master/main）无关；每次重要更新换新 tag
 
 
 class HeaderError(ValueError):
@@ -101,9 +101,10 @@ def build_entry(ahk: pathlib.Path, fields: dict, base: pathlib.Path) -> dict:
         "host": fields["host"],
         "entry": fields["entry"],
         "path": rel,
-        "size_kb": round(ahk.stat().st_size / 1024, 1),
-        "gitee": f"https://gitee.com/{owner}/{repo}/raw/{BRANCH}/{enc}",
-        "github": f"https://raw.githubusercontent.com/{gh_owner}/{repo}/{BRANCH}/{enc}",
+        # size 量 LF blob（git 存储/下载的字节），不量 CRLF 工作副本——后者随平台漂移、比下载内容大
+        "size_kb": round(len(ahk.read_bytes().replace(b"\r\n", b"\n")) / 1024, 1),
+        "gitee": f"https://gitee.com/{owner}/{repo}/raw/{TAG}/{enc}",
+        "github": f"https://raw.githubusercontent.com/{gh_owner}/{repo}/{TAG}/{enc}",
     }
     return {k: entry[k] for k in FIELDS}
 
@@ -168,9 +169,9 @@ def selftest() -> int:
     check(all(fields.get(k) for k in REQUIRED), "T1 完整头部应解析出 11 必填")
     validate(fields, "双击防抖")
 
-    exp_gitee = ("https://gitee.com/qiuzongman/ahk-v2-scripts/raw/main/scripts/"
+    exp_gitee = (f"https://gitee.com/qiuzongman/ahk-v2-scripts/raw/{TAG}/scripts/"
                  "%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96.ahk")
-    exp_github = ("https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/main/scripts/"
+    exp_github = (f"https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/{TAG}/scripts/"
                   "%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96.ahk")
     with tempfile.TemporaryDirectory() as td:
         base = pathlib.Path(td)
@@ -221,12 +222,26 @@ def selftest() -> int:
         e = build_entry(ahk, fields, base)
         check(e.get("size_kb") == 2.0, f"T12 2048 B 应换算为 2.0 KB，实得 {e.get('size_kb')!r}")
 
+    import re
+    check(bool(re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", TAG)),
+          f"T13 TAG 应为里程碑日期 YYYY-MM-DD（不是分支名）：{TAG!r}")
+
+    with tempfile.TemporaryDirectory() as td:
+        base = pathlib.Path(td)
+        sd = base / "scripts"
+        (sd / "双击防抖").mkdir(parents=True)
+        ahk = sd / "双击防抖" / "双击防抖.ahk"
+        ahk.write_bytes(b"x\r\n" * 512)  # 1536 B CRLF → 1024 B LF
+        e = build_entry(ahk, fields, base)
+        check(e.get("size_kb") == 1.0,
+              f"T14 size 应量 LF blob（1536 CRLF→1024 LF=1.0 KB），实得 {e.get('size_kb')!r}")
+
     if fails:
         print("SELFTEST FAIL：")
         for f in fails:
             print("  - " + f)
         return 1
-    print("SELFTEST PASS（12 组钉子全绿）")
+    print("SELFTEST PASS（14 组钉子全绿）")
     return 0
 
 
