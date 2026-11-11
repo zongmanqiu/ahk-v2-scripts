@@ -34,7 +34,7 @@ FIELDS = ("name", "version", "date", "description", "author", "license",
           "requires", "host", "entry", "path", "size_kb", "gitee", "github")
 # gitee owner → github owner：照 rupix，主机名和 owner 一起换（只换主机名会 404）。
 GITHUB_OWNER = {"qiuzongman": "zongmanqiu"}
-TAG = "2026-11-11"  # raw 地址钉里程碑 tag：版本稳定、与远端分支名（master/main）无关；每次重要更新换新 tag
+TAG = "2026-11-12"  # raw 地址钉里程碑 tag：版本稳定、与远端分支名（master/main）无关；每次重要更新换新 tag
 
 
 class HeaderError(ValueError):

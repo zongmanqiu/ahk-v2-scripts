@@ -9,7 +9,7 @@
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
 ; @host         AHKDeck 0.2.2+（亦可独立运行）
-; @entry        托盘菜单「夜灯调整」
+; @entry        托盘菜单「夜灯调整」；--selftest 为无 GUI 分支
 ; ==/UserScript==
 ;
 ; 夜灯：用滑块调屏幕色温，并同步进 Windows 夜间模式的 CloudStore 值。
@@ -138,6 +138,20 @@ RegOpen(root, path, access) {
     if (rc != 0)
         return 0
     return NumGet(hk, 0, "Ptr")
+}
+
+KeyExists(full) {
+    root := 0x80000001
+    sub := full
+    if (SubStr(full, 1, 5) = "HKLM\")
+        root := 0x80000002, sub := SubStr(full, 6)
+    else if (SubStr(full, 1, 5) = "HKCU\")
+        sub := SubStr(full, 6)
+    h := RegOpen(root, sub, 0x20019)
+    if !h
+        return false
+    DllCall("advapi32.dll\RegCloseKey", "Ptr", h)
+    return true
 }
 
 RegReadBinary(root, path, name) {
@@ -412,6 +426,86 @@ OnScriptExit(*) {
     if gWritePending
         FlushKelvin()
     return 0
+}
+
+; ── 无 GUI 自测：--selftest [输出路径] ───────────────────────────────
+; 只动纯函数与 HKCU 自建键：不写真实夜间模式值、不碰屏幕 Gamma、不改 HKLM。
+
+if (A_Args.Length >= 1 && A_Args[1] = "--selftest")
+    RunSelfTest(A_Args.Length >= 2 ? A_Args[2] : A_ScriptDir "\selftest-result.txt")
+
+RunSelfTest(path) {
+    global MIN_K, MAX_K
+    out := ""
+    Emit(s) => out .= s "`n"
+
+    okv := true
+    for v in [0, 1, 127, 128, 300, 2400, 13000, 16383, 16384] {
+        a := []
+        AddVarint(a, v)
+        r := ReadVarint(ArrToBuffer(a), 0)
+        if (r[1] != v || r[2] != a.Length)
+            okv := false
+    }
+    Emit((okv ? "PASS " : "FAIL ") "varint 编解码往返（9 组）")
+
+    tpl := ArrToBuffer(BuildTemplate(3400, 1762900000))
+    info := ParseNightLight(tpl)
+    Emit((info && info.tempVal = 3400 ? "PASS " : "FAIL ") "模板解析回温度 3400")
+    Emit((info && info.tsVal = 1762900000 ? "PASS " : "FAIL ") "模板解析回时间戳")
+    Emit((info && info.tempPos > 0 ? "PASS " : "FAIL ") "温度字段可定位")
+    Emit((ParseNightLight(Buffer(16, 0xFF)) = 0 ? "PASS " : "FAIL ") "坏数据解析被拒")
+
+    Emit((IntensityToKelvin(0) = MAX_K && IntensityToKelvin(100) = MIN_K ? "PASS " : "FAIL ") "强度端点 0/100")
+    okk := true
+    i := 0
+    Loop 101 {
+        if (Abs(KelvinToIntensity(IntensityToKelvin(i)) - i) > 1)
+            okk := false
+        i += 1
+    }
+    Emit((okk ? "PASS " : "FAIL ") "强度↔色温往返误差 ≤1")
+    Emit((UnixNow() > 1700000000 ? "PASS " : "FAIL ") "系统时间戳合理")
+
+    sub := "Software\AHKDeck\NightLightSelfTest"
+    hk := "HKCU\" . sub
+    if KeyExists(hk) {
+        FileAppend("FAIL 自建键已存在，放弃自测以免覆盖未知状态`n", path, "UTF-8")
+        ExitApp(1)
+    }
+    RegWrite("", "REG_SZ", hk)
+    Emit((KeyExists(hk) ? "PASS " : "FAIL ") "自建键建立")
+    w1 := ArrToBuffer([1, 2, 3, 4, 5, 6, 7, 8])
+    Emit((RegWriteBinary(0x80000001, sub, "Data", w1) ? "PASS " : "FAIL ") "二进制值写入")
+    rb := RegReadBinary(0x80000001, sub, "Data")
+    same := rb && rb.Size = 8
+    if same {
+        n := 0
+        Loop 8 {
+            if (NumGet(rb, n, "UChar") != n + 1)
+                same := false
+            n += 1
+        }
+    }
+    Emit((same ? "PASS " : "FAIL ") "二进制值读回逐字节相等")
+    w2 := ArrToBuffer([9, 8, 7])
+    RegWriteBinary(0x80000001, sub, "Data", w2)
+    rb2 := RegReadBinary(0x80000001, sub, "Data")
+    Emit((rb2 && rb2.Size = 3 && NumGet(rb2, 0, "UChar") = 9 ? "PASS " : "FAIL ") "覆盖写入生效")
+
+    try RegDeleteKey(hk)
+    Emit((!KeyExists(hk) ? "PASS " : "FAIL ") "自建键清理")
+    try RegDeleteKey("HKCU\Software\AHKDeck")
+
+    fails := 0
+    for ln in StrSplit(out, "`n")
+        if (SubStr(ln, 1, 5) = "FAIL ")
+            fails++
+    Emit("fails=" . fails)
+    try DirCreate(SubStr(path, 1, InStr(path, "\", false, -1) - 1))
+    try FileDelete(path)
+    FileAppend(out, path, "UTF-8")
+    ExitApp(fails ? 1 : 0)
 }
 
 UnlockGammaRange()
