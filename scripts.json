@@ -11,8 +11,8 @@
     "entry": "托盘菜单「设置」；配置存于脚本旁同名 .ini",
     "path": "scripts/双击防抖/双击防抖.ahk",
     "size_kb": 3.3,
-    "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/2026-11-12/scripts/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96.ahk",
-    "github": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/2026-11-12/scripts/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96.ahk"
+    "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/2026-11-12-2/scripts/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96.ahk",
+    "github": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/2026-11-12-2/scripts/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96.ahk"
   },
   {
     "name": "夜灯",
@@ -26,8 +26,8 @@
     "entry": "托盘菜单「夜灯调整」；--selftest 为无 GUI 分支",
     "path": "scripts/夜灯/夜灯.ahk",
     "size_kb": 15.8,
-    "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/2026-11-12/scripts/%E5%A4%9C%E7%81%AF/%E5%A4%9C%E7%81%AF.ahk",
-    "github": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/2026-11-12/scripts/%E5%A4%9C%E7%81%AF/%E5%A4%9C%E7%81%AF.ahk"
+    "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/2026-11-12-2/scripts/%E5%A4%9C%E7%81%AF/%E5%A4%9C%E7%81%AF.ahk",
+    "github": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/2026-11-12-2/scripts/%E5%A4%9C%E7%81%AF/%E5%A4%9C%E7%81%AF.ahk"
   },
   {
     "name": "打开方式清理",
@@ -41,7 +41,22 @@
     "entry": "托盘菜单「打开方式清理」；--report / --selftest 为无 GUI 分支",
     "path": "scripts/打开方式清理/打开方式清理.ahk",
     "size_kb": 42.8,
-    "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/2026-11-12/scripts/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86.ahk",
-    "github": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/2026-11-12/scripts/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86.ahk"
+    "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/2026-11-12-2/scripts/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86.ahk",
+    "github": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/2026-11-12-2/scripts/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86.ahk"
+  },
+  {
+    "name": "文件时间修改",
+    "version": "2.3.2",
+    "date": "2026-11-12",
+    "description": "拖入文件或文件夹，点「更新时间」后设定创建/修改/访问时间；勾选「包含子文件（夹）」才连同内部所有文件与子文件夹一起生效",
+    "author": "邱宗满",
+    "license": "AGPL-3.0",
+    "requires": "AutoHotkey v2.0",
+    "host": "AHKDeck 0.2.2+（亦可独立运行）",
+    "entry": "主窗口「更新时间」按钮；拖放文件/文件夹入列表",
+    "path": "scripts/文件时间修改/文件时间修改.ahk",
+    "size_kb": 7.0,
+    "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/2026-11-12-2/scripts/%E6%96%87%E4%BB%B6%E6%97%B6%E9%97%B4%E4%BF%AE%E6%94%B9/%E6%96%87%E4%BB%B6%E6%97%B6%E9%97%B4%E4%BF%AE%E6%94%B9.ahk",
+    "github": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/2026-11-12-2/scripts/%E6%96%87%E4%BB%B6%E6%97%B6%E9%97%B4%E4%BF%AE%E6%94%B9/%E6%96%87%E4%BB%B6%E6%97%B6%E9%97%B4%E4%BF%AE%E6%94%B9.ahk"
   }
 ]
