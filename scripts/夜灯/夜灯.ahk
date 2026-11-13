@@ -1,10 +1,10 @@
 ; ==UserScript==
 ; @name         夜灯
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.0.2
+; @version      1.2.2
 ; @description  滑块调屏幕色温（GammaRamp），并同步写入 Windows 夜间模式设置
 ; @author       邱宗满
-; @date         2026-11-12
+; @date         2026-11-13
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -15,6 +15,12 @@
 ; 夜灯：用滑块调屏幕色温，并同步进 Windows 夜间模式的 CloudStore 值。
 ; 入口：托盘菜单「夜灯调整」（宿主内由宿主镜像，独立运行显示自己的图标）。全局热键交给 AHKDeck 指派，脚本不自设。
 ; 纯 AHK v2：GammaRamp 走 gdi32，注册表走 advapi32，不依赖外部 exe。
+;
+; 1.1.0：离屏 AlwaysOnTop 小窗并入 §10 的配色与版式口径。
+; 1.2.0：去掉底部说明行；滑块改成自绘（系统 Trackbar 的经典灰槽 + 蓝滑块与浅色令牌不搭），
+; 只用封版令牌（槽 BAND、滑块 FRAME 描边 + SOFT 内块）与已验证的 SS_NOTIFY + 轮询拖动，
+; 不新增色值/字号；标题栏不再覆盖成 IDI_APPLICATION，恢复 AHK 默认图标。
+; 关面板只关面板、脚本仍待命（Persistent），与「文件时间修改关窗即退出」是两种正确口径。
 
 #Requires AutoHotkey v2.0
 #SingleInstance Force
@@ -28,9 +34,128 @@ NL_VALUE := "Data"
 ICM_KEY := "Software\Microsoft\Windows NT\CurrentVersion\ICM"
 
 gGui := 0
-gSlider := 0
+gTrack := 0
 gPct := 0
 gIntensity := 0
+; 系统 Trackbar 由 comctl32 主题引擎画，宿主里是经典灰槽 + 蓝色系统滑块，与浅色令牌不搭。
+; 改自绘，但只借用 §10 已封版的令牌与按钮描边配方，不新增色值/字号：
+; 槽 BAND(DCE8F7)、滑块外框 FRAME(B7C8E0) + 内块 SOFT(EBF2FB)。
+; 交互靠 +0x100(SS_NOTIFY) + OnMessage(0x201) + 20ms 轮询，与 FlatScroll 同一套已验证机制。
+class FlatTrack {
+    __New(g, x, y, w, h, value, cb) {
+        this.g := g, this.x := x, this.y := y, this.w := w, this.h := h
+        this.tw := 12, this.th := 20
+        this.value := Max(0, Min(100, value))
+        this.cb := cb
+        this.dragging := false, this.dead := false
+        ; 滑块高 th(20) 比槽高 h(10) 各高出 5px；滑块移开后腾出的那两条 5px
+        ; 属于「窗口背景」，宿主不重绘这块区域 → 拖动时留下残影。
+        ; 先铺一条与滑块同高的同色底衬，腾出的像素就归属一个会正常重绘的控件。
+        this.bed := g.Add("Text", "x" x " y" (y - (this.th - h) // 2)
+            " w" w " h" this.th " +0x100 BackgroundF7F9FC")
+        this.track := g.Add("Text", "x" x " y" y " w" w " h" h " +0x100 BackgroundDCE8F7")
+        ; 后创建的盖在槽上：外框 1px、内块缩进 1px，与 FlatButton 同一套描边。
+        this.outer := g.Add("Text", "x0 y0 w0 h0 +0x100 BackgroundB7C8E0")
+        this.inner := g.Add("Text", "x0 y0 w0 h0 +0x100 BackgroundEBF2FB")
+        this.Paint()
+    }
+    Hit(hwnd) {
+        return hwnd = this.track.Hwnd || hwnd = this.bed.Hwnd
+            || hwnd = this.outer.Hwnd || hwnd = this.inner.Hwnd
+    }
+    Paint() {
+        span := this.w - this.tw
+        tx := this.x + Round(span * this.value / 100)
+        ty := this.y - (this.th - this.h) // 2
+        ; 两个色块逐个 Move 会出现「外框已到、内块还在旧位」的中间帧，
+        ; 拖动时 20ms 一拍，中间帧会被看见（K24 同型坑）。批量提交只有一次布局。
+        h := DllCall("user32\BeginDeferWindowPos", "Int", 2, "Ptr")
+        if (h) {
+            f := 0x0004 | 0x0010 | 0x0040      ; SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW
+            h := DllCall("user32\DeferWindowPos", "Ptr", h, "Ptr", this.outer.Hwnd
+                , "Ptr", 0, "Int", tx, "Int", ty, "Int", this.tw, "Int", this.th, "UInt", f, "Ptr")
+            h := DllCall("user32\DeferWindowPos", "Ptr", h, "Ptr", this.inner.Hwnd
+                , "Ptr", 0, "Int", tx + 1, "Int", ty + 1, "Int", this.tw - 2, "Int", this.th - 2, "UInt", f, "Ptr")
+            if (h)
+                DllCall("user32\EndDeferWindowPos", "Ptr", h)
+            return
+        }
+        this.outer.Move(tx, ty, this.tw, this.th)
+        this.inner.Move(tx + 1, ty + 1, this.tw - 2, this.th - 2)
+    }
+    Set(v, fire := false) {
+        v := Max(0, Min(100, Round(v)))
+        if (v = this.value)
+            return
+        this.value := v
+        this.Paint()
+        ; 属性里存的是函数对象，必须显式 .Call(v)：写成 this.cb(v) 会被当成
+        ; 「方法」调用并隐式多传一个 this，两个内核都会报参数过多。
+        if (fire && this.cb)
+            this.cb.Call(v)
+    }
+    BeginDrag() {
+        if (this.dead || this.dragging)
+            return
+        this.dragging := true
+        this.Tick()
+        SetTimer(ObjBindMethod(this, "Tick"), 20)
+    }
+    ; Text 控件拿不到中途的 MOUSEMOVE，用 GetCursorPos + GetKeyState 轮询反而稳。
+    Tick() {
+        if (this.dead || !GetKeyState("LButton", "P")) {
+            SetTimer(ObjBindMethod(this, "Tick"), 0)
+            this.dragging := false
+            return
+        }
+        pt := Buffer(8, 0)
+        DllCall("user32\GetCursorPos", "Ptr", pt)
+        sx := NumGet(pt, 0, "Int")
+        r := Buffer(16, 0)
+        DllCall("user32\GetWindowRect", "Ptr", this.track.Hwnd, "Ptr", r)
+        left := NumGet(r, 0, "Int"), right := NumGet(r, 8, "Int")
+        span := (right - left) - this.tw
+        if (span <= 0)
+            return
+        this.Set((sx - left - this.tw // 2) / span * 100, true)
+    }
+    Key(wp) {
+        v := this.value
+        switch wp {
+            case 0x25: v -= 1
+            case 0x27: v += 1
+            case 0x21: v -= 10
+            case 0x22: v += 10
+            case 0x24: v := 0
+            case 0x23: v := 100
+            default: return false
+        }
+        this.Set(v, true)
+        return true
+    }
+    Stop() {
+        this.dead := true
+        SetTimer(ObjBindMethod(this, "Tick"), 0)
+        this.dragging := false
+    }
+}
+
+OnTrackDown(wp, lp, msg, hwnd) {
+    global gTrack
+    if (gTrack && gTrack.Hit(hwnd))
+        gTrack.BeginDrag()
+}
+
+OnTrackKey(wp, lp, msg, hwnd) {
+    global gTrack, gGui
+    if (!gTrack || !gGui)
+        return
+    if (hwnd != gGui.Hwnd && !gTrack.Hit(hwnd))
+        return
+    if (gTrack.Key(wp))
+        return 0
+}
+
 gHighestWritten := 0
 gWritePending := false
 
@@ -343,9 +468,8 @@ UnlockGammaRange() {
 
 UpdatePct() {
     global gPct, gIntensity
-    if !gPct
-        return
-    gPct.Value := gIntensity . "%"
+    if gPct
+        gPct.Value := gIntensity . "%"
 }
 
 ScheduleWrite() {
@@ -361,57 +485,74 @@ FlushKelvin() {
     WriteNightLight(IntensityToKelvin(gIntensity))
 }
 
-OnSliderChange(ctrl, info) {
+OnTrackChange(v) {
     global gIntensity
-    gIntensity := ctrl.Value
-    ApplyRamp(IntensityToKelvin(gIntensity))
+    gIntensity := v
+    ApplyRamp(IntensityToKelvin(v))
     UpdatePct()
     ScheduleWrite()
 }
 
 OnPanelClose(*) {
-    global gGui, gSlider, gPct
+    global gGui, gTrack, gPct
+    ; 拖动定时器会让脚本在面板销毁后继续存活，关闭前先停（K21 同型坑）。
+    if gTrack
+        gTrack.Stop()
     if gGui
         gGui.Destroy()
     gGui := 0
-    gSlider := 0
+    gTrack := 0
     gPct := 0
 }
 
+PaintCaption() {
+    global gGui
+    c := Buffer(4, 0)
+    NumPut("UInt", 0x00F7E8DC, c)
+    t := Buffer(4, 0)
+    NumPut("UInt", 0x3A2B20, t)
+    try {
+        DllCall("dwmapi.dll\DwmSetWindowAttribute", "Ptr", gGui.Hwnd, "UInt", 35, "Ptr", c, "UInt", 4)
+        DllCall("dwmapi.dll\DwmSetWindowAttribute", "Ptr", gGui.Hwnd, "UInt", 36, "Ptr", t, "UInt", 4)
+        DllCall("dwmapi.dll\DwmSetWindowAttribute", "Ptr", gGui.Hwnd, "UInt", 34, "Ptr", c, "UInt", 4)
+    }
+}
+
 ShowPanel() {
-    global gGui, gSlider, gPct, gIntensity
+    global gGui, gTrack, gPct, gIntensity
     if gGui {
         gGui.Show()
         WinActivate("ahk_id " . gGui.Hwnd)
         return
     }
+    ; 版式照 §10：客户区 320×52，行宽 288（320−32）；槽 w232 + 8 + 百分比 w48 = 288，
+    ; 右缘 16+288 = 304 = 320−16。去掉底部说明行后，窗高 = 顶 12 + 行高 28 + 底 12 = 52。
     gGui := Gui("+AlwaysOnTop +Owner -MaximizeBox -MinimizeBox", "夜灯调整")
+    gGui.BackColor := "F7F9FC"
     gGui.SetFont("s10", "Microsoft YaHei UI")
-    gGui.MarginX := 12
-    gGui.MarginY := 8
-    gSlider := gGui.Add("Slider", "w232 Range0-100 NoTicks ToolTip", gIntensity)
-    gPct := gGui.Add("Text", "x+8 w42 Right", gIntensity . "%")
-    gSlider.OnEvent("Change", OnSliderChange)
+
+    gTrack := FlatTrack(gGui, 16, 21, 232, 10, gIntensity, OnTrackChange)
+    gPct := gGui.Add("Text", "x256 y12 w48 h28 BackgroundF7F9FC c202B3A +0x200 Right", gIntensity . "%")
     gGui.OnEvent("Close", OnPanelClose)
     gGui.OnEvent("Escape", OnPanelClose)
     UpdatePct()
+
     MonitorGetWorkArea(1, &wl, &wt, &wr, &wb)
-    gGui.Show("AutoSize x-20000 y-20000")
+    gGui.Show("w320 h52 x-20000 y-20000")
     gGui.GetPos(&gx, &gy, &gw, &gh)
     gGui.Move(wr - gw - 12, wb - gh - 12)
-    hIcon := DllCall("LoadIconW", "Ptr", 0, "Ptr", 32512, "Ptr")
-    DllCall("SendMessageW", "Ptr", gGui.Hwnd, "UInt", 0x80, "Ptr", 0, "Ptr", hIcon)
-    DllCall("SendMessageW", "Ptr", gGui.Hwnd, "UInt", 0x80, "Ptr", 1, "Ptr", hIcon)
+    PaintCaption()
+    ; 不再 LoadIcon / WM_SETICON：IDI_APPLICATION 会把 AHK 默认绿图标盖掉，
+    ; 其它官方窗口都用默认图标。0x127 只隐藏焦点框，与图标无关。
     DllCall("SendMessageW", "Ptr", gGui.Hwnd, "UInt", 0x127, "Ptr", 0x10001, "Ptr", 0)
-    DllCall("SendMessageW", "Ptr", gSlider.Hwnd, "UInt", 0x128, "Ptr", 0x10001, "Ptr", 0)
     DllCall("SetFocus", "Ptr", gGui.Hwnd)
 }
 
 ResetToCool() {
-    global gSlider, gIntensity, MAX_K
+    global gTrack, gIntensity, MAX_K
     gIntensity := 0
-    if gSlider
-        gSlider.Value := 0
+    if gTrack
+        gTrack.Set(0)
     ApplyRamp(MAX_K)
     UpdatePct()
     SetTimer(FlushKelvin, 0)
@@ -532,6 +673,9 @@ if !InStr(A_AhkPath, "AHKDeck.exe")
 ; 往 A_TrayMenu 加项不算，所以这里显式声明常驻。
 Persistent(true)
 
+; 自绘轨的点击/键盘是全局消息，注册一次即可；面板关掉后 gTrack=0，回调自行空转。
+OnMessage(0x201, OnTrackDown)
+OnMessage(0x100, OnTrackKey)
 ; 首次运行为便于观察直接弹面板；不需要可删掉下一行。
 SetTimer(() => ShowPanel(), -600)
 

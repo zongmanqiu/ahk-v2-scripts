@@ -36,7 +36,7 @@ FIELDS = ("name", "version", "date", "description", "author", "license",
           "requires", "host", "entry", "path", "size_kb", "gitee", "github")
 # gitee owner → github owner：照 rupix，主机名和 owner 一起换（只换主机名会 404）。
 GITHUB_OWNER = {"qiuzongman": "zongmanqiu"}
-TAG = "2026-11-12-2"  # raw 地址钉里程碑 tag。同日多次发版加 -N 后缀（开发指南 §7.1）；每次重要更新换新 tag
+TAG = "2026-11-13"  # raw 地址钉里程碑 tag。同日多次发版加 -N 后缀（开发指南 §7.1）；每次重要更新换新 tag
 
 # 行首热键/热字串定义。字符类不含 ':'，所以 ::hotstring:: 不会命中；
 # #HotIf 上下文块内的按键（列表 UI 的 Delete:: 等）由 lint_script 单独放行。
