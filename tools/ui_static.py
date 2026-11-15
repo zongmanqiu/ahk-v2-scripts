@@ -1,10 +1,9 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""官方脚本 UI 静态门禁（只读源码，不运行脚本）。
+"""官方脚本 UI 静态门禁（只读源码，不运行脚本）——**一次只查一个脚本**。
 
-为什么需要它：视觉回归工具（ui_regress.py）要拉起窗口、跑几分钟，很多问题
-在「代码还没跑起来」时就能一眼看出来 —— 比如写错了色值、忘了同步版本号、
-引入了第二套字号。这类问题不必等实机复现才拦。
+为什么需要它：视觉回归要拉起窗口、跑几分钟，很多问题在「代码还没跑起来」时就能
+一眼看出来 —— 写错色值、忘同步版本号、引入第二套字号。这类问题不必等实机复现才拦。
 
 检查项：
   S1 头部元数据齐全    @name/@version/@description/@author/@license/@date 等
@@ -19,8 +18,10 @@
   S10 出货件一致     .build/Scripts/<名>.ahk 必须与仓库件逐字节相同
 
 用法：
-  python tools/ui_static.py                 # 跑全部
-  python tools/ui_static.py 夜灯 双击防抖    # 只跑指定脚本
+  python tools/ui_static.py 夜灯            # 只查这一个脚本（必须给名字）
+
+**不接受「不带名字跑全部」**：改 A 脚本时把 B 脚本的旧账一起翻出来，只会让人去动
+不该动的文件（AGENTS.md 第 12 条）。要查别的脚本，把名字显式写上去。
 
 退出码 0 = 全过；1 = 有失败项。
 """
@@ -83,8 +84,39 @@ def check(name, ok, detail=""):
     return bool(ok)
 
 
+def strip_comments(text):
+    """去掉 AHK 的 ; 行注释（双引号内的 ; 和 "" 转义要跳过）。
+
+    只为色值扫描用：注释里的十六进制不是色值。实测误报——显示器实例名
+    `DISPLAY\\XMI23C3\\5&c58316c&0&UID4353_0` 里的 `c58316c` 被 `\\bc[0-9A-F]{6}\\b`
+    当成了 c 前置色，报出一个根本不存在的「越界色 58316C」。
+    """
+    out = []
+    for line in text.splitlines():
+        in_str = False
+        cut = len(line)
+        i = 0
+        while i < len(line):
+            ch = line[i]
+            if in_str:
+                if ch == '"':
+                    if i + 1 < len(line) and line[i + 1] == '"':
+                        i += 1
+                    else:
+                        in_str = False
+            elif ch == '"':
+                in_str = True
+            elif ch == ";":
+                cut = i
+                break
+            i += 1
+        out.append(line[:cut])
+    return "\n".join(out)
+
+
 def collect_colors(text):
     """扫出所有 6 位十六进制色字面量（含 Background/c 参数与引号内字符串）。"""
+    text = strip_comments(text)
     found = {}
     # Background 后紧跟的色
     for m in re.finditer(r'Background([0-9A-Fa-f]{6})', text):
@@ -287,7 +319,10 @@ def check_script(name):
 def main():
     names = [a for a in sys.argv[1:] if not a.startswith("-")]
     if not names:
-        names = sorted(p.parent.name for p in SCRIPTS.glob("*/[!_]*.ahk"))
+        print("错误：必须指定脚本名，例如 python tools/ui_static.py 夜灯", file=sys.stderr)
+        print("      （不提供「跑全部」：改 A 就只查 A，见 AGENTS.md 第 12 条）",
+              file=sys.stderr)
+        return 2
     failed = 0
     for name in names:
         print(f"── {name} ──")

@@ -1,10 +1,10 @@
 ; ==UserScript==
 ; @name         打开方式清理
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.5.4
+; @version      1.5.5
 ; @description  扫描 Windows「打开方式」相关的 13 处注册表位置，列出并清理失效残留
 ; @author       邱宗满
-; @date         2026-11-13
+; @date         2026-11-15
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -620,7 +620,7 @@ if (A_Args.Length >= 1 && A_Args[1] = "--report") {
 }
 
 if (A_Args.Length >= 1 && A_Args[1] = "--selftest") {
-    RunSelfTest(A_Args.Length >= 2 ? A_Args[2] : A_ScriptDir "\selftest-result.txt")
+    RunSelfTest(A_Args.Length >= 2 ? A_Args[2] : A_ScriptDir "\打开方式清理\selftest-result.txt")
     ExitApp
 }
 

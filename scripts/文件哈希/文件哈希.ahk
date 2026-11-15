@@ -1,10 +1,10 @@
 ; ==UserScript==
 ; @name         文件哈希
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.2.0
+; @version      1.2.1
 ; @description  选或拖入文件，一趟读出 MD5/SHA1/SHA256/SHA384/SHA512 五种校验值，双击即复制
 ; @author       邱宗满
-; @date         2026-11-13
+; @date         2026-11-15
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -315,7 +315,7 @@ FormatSize(b) {
 ; 黄金向量为本机系统 certutil 对内容 "abc" 的实测值；只建自创临时文件，结束即删。
 
 if (A_Args.Length >= 1 && A_Args[1] = "--selftest")
-    RunSelfTest(A_Args.Length >= 2 ? A_Args[2] : A_ScriptDir "\selftest-result.txt")
+    RunSelfTest(A_Args.Length >= 2 ? A_Args[2] : A_ScriptDir "\文件哈希\selftest-result.txt")
 
 RunSelfTest(path) {
     global ALGS

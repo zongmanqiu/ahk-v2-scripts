@@ -1,10 +1,10 @@
 ; ==UserScript==
 ; @name         防休眠
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.0.1
+; @version      1.0.2
 ; @description  两项托盘勾选阻止系统休眠／屏幕自动关闭，直调内核唤醒 API，退出自动还原
 ; @author       邱宗满
-; @date         2026-11-13
+; @date         2026-11-15
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -84,7 +84,7 @@ SetBlock(kind) {
 ; 结束即清回 ES_CONTINUOUS，不写注册表、不碰电源计划。
 
 if (A_Args.Length >= 1 && A_Args[1] = "--selftest")
-    RunSelfTest(A_Args.Length >= 2 ? A_Args[2] : A_ScriptDir "\selftest-result.txt")
+    RunSelfTest(A_Args.Length >= 2 ? A_Args[2] : A_ScriptDir "\防休眠\selftest-result.txt")
 
 RunSelfTest(path) {
     global ES_CONTINUOUS, ES_SYSTEM_REQUIRED, ES_DISPLAY_REQUIRED, gBlockSleep, gBlockScreen

@@ -1,5 +1,7 @@
-# 脚本运行时产物（写在脚本旁，不进仓库）
+# 脚本运行时产物（一律在 scripts/<名>/<名>/ 下，不进仓库；见开发指南 §1）
 *.ini
+selftest-result.txt
+scan-report.txt
 history/
 backup_*
 

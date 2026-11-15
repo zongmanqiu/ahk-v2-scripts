@@ -1,10 +1,10 @@
 ; ==UserScript==
 ; @name         夜灯
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.2.2
+; @version      1.2.3
 ; @description  滑块调屏幕色温（GammaRamp），并同步写入 Windows 夜间模式设置
 ; @author       邱宗满
-; @date         2026-11-13
+; @date         2026-11-15
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -573,7 +573,7 @@ OnScriptExit(*) {
 ; 只动纯函数与 HKCU 自建键：不写真实夜间模式值、不碰屏幕 Gamma、不改 HKLM。
 
 if (A_Args.Length >= 1 && A_Args[1] = "--selftest")
-    RunSelfTest(A_Args.Length >= 2 ? A_Args[2] : A_ScriptDir "\selftest-result.txt")
+    RunSelfTest(A_Args.Length >= 2 ? A_Args[2] : A_ScriptDir "\夜灯\selftest-result.txt")
 
 RunSelfTest(path) {
     global MIN_K, MAX_K

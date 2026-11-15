@@ -1,10 +1,10 @@
 ; ==UserScript==
 ; @name         双击防抖
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.2.0
+; @version      1.2.1
 ; @description  用低级鼠标钩子分别拦截左键、右键、中键间隔过短的连击，各键最小间隔可在托盘设置（0 关闭，10~500 ms）
 ; @author       邱宗满
-; @date         2026-11-13
+; @date         2026-11-15
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -26,7 +26,12 @@
 #SingleInstance Force
 #NoTrayIcon
 
-gIni := A_ScriptDir "\双击防抖.ini"
+; 运行时产物一律进同名文件夹（开发指南 §1「一个脚本一个文件夹」）：
+; 双击防抖\双击防抖.ini。旧版把 ini 直接摊在脚本旁，这里做一次性迁移，
+; 旧文件保留不动——用户回退到旧版时设置还在。
+gDir := A_ScriptDir "\双击防抖"
+gIni := gDir "\双击防抖.ini"
+gIniLegacy := A_ScriptDir "\双击防抖.ini"
 gKeys := [
     { name: "左键", ini: "Left",   down: 0x0201, up: 0x0202, interval: 50, last: 0, blocked: false },
     { name: "右键", ini: "Right",  down: 0x0204, up: 0x0205, interval: 0,  last: 0, blocked: false },
@@ -67,8 +72,25 @@ MouseProc(nCode, wParam, lParam) {
     return DllCall("CallNextHookEx", "Ptr", 0, "Int", nCode, "Ptr", wParam, "Ptr", lParam, "Ptr")
 }
 
+; 配置目录按需创建：只有真要落盘时才建，纯读场景不会凭空多出一个空文件夹。
+EnsureConfigDir() {
+    global gDir
+    if !DirExist(gDir)
+        try DirCreate(gDir)
+}
+
+; 旧位置有、新位置没有 → 整份复制过去（含全部 section），旧文件不动。
+MigrateConfig() {
+    global gIni, gIniLegacy
+    if (FileExist(gIni) || !FileExist(gIniLegacy))
+        return
+    EnsureConfigDir()
+    try FileCopy(gIniLegacy, gIni, 0)
+}
+
 LoadConfig() {
     global gIni, gKeys
+    MigrateConfig()
     legacy := IniRead(gIni, "Settings", "Interval", "")
     for k in gKeys {
         v := IniRead(gIni, "Settings", k.ini, "")
@@ -78,6 +100,7 @@ LoadConfig() {
     }
     ; 只迁移一次：写齐三个新键后删掉旧键，避免下次启动又把旧值盖回来。
     if (legacy != "") {
+        EnsureConfigDir()
         for k in gKeys
             IniWrite k.interval, gIni, "Settings", k.ini
         try IniDelete(gIni, "Settings", "Interval")
@@ -179,6 +202,7 @@ SaveSettings(g, edits) {
         k.interval := vals[i]
         ; 改间隔后清掉旧计时，否则禁用/放宽的键可能残留一次 blocked 抬起。
         k.last := 0, k.blocked := false
+        EnsureConfigDir()
         IniWrite k.interval, gIni, "Settings", k.ini
     }
     g.Destroy()
