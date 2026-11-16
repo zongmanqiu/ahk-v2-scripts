@@ -147,7 +147,10 @@ def build_entry(ahk: pathlib.Path, fields: dict, base: pathlib.Path) -> dict:
         # .ahk leaves them empty so the host downloads a plain file.
         "package": gitee_url if is_zip else "",
         "packageGithub": github_url if is_zip else "",
-        "history": (f"https://gitee.com/{owner}/{repo}/raw/{HISTORY_BRANCH}/"
+        # Gitee raw 走直接 CDN 域名，而不是 gitee.com/.../raw/...：
+        # 后者 302 到带时效签名的 raw.giteeusercontent.com?...signature=...，
+        # 用户点开/书签/转存后签名过期就失效；直连 CDN 无签名、无跳转。
+        "history": (f"https://raw.giteeusercontent.com/{owner}/{repo}/raw/{HISTORY_BRANCH}/"
                     f"history/{quote(ident, safe='')}.json"),
         "historyGithub": (f"https://raw.githubusercontent.com/{gh_owner}/{repo}/"
                           f"{HISTORY_BRANCH}/history/{quote(ident, safe='')}.json"),
