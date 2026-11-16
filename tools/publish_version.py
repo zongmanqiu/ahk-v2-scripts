@@ -156,12 +156,38 @@ def attach_gitee(token: str, owner: str, repo: str, rel_id: int, asset: Path, ap
 
 
 def release_github(owner: str, repo: str, tag: str, name: str, notes_path: Path,
-                   asset: Path, apply: bool) -> None:
+                   asset: Path, gh_name: str, apply: bool) -> None:
     if not apply:
-        print(f"[dry] gh release create {tag} {asset.name} (notes {notes_path.name})")
+        print(f"[dry] gh release create {tag} [asset {gh_name}] (notes {notes_path.name})")
         return
-    run(["gh", "release", "create", tag, str(asset), "--repo", f"{owner}/{repo}",
+    # m221: create the release WITHOUT an asset, then upload via the uploads
+    # endpoint with an explicit name=. Passing a Chinese path as an argv to
+    # `gh release create` makes GitHub store it as "default.ahk" (Windows argv
+    # mangles it), so the manifest's URL 404s. uploads + name=<quoted> keeps
+    # the asset name byte-for-byte identical to scripts.json.
+    run(["gh", "release", "create", tag, "--repo", f"{owner}/{repo}",
          "--title", name, "--notes-file", str(notes_path)])
+    token = subprocess.run(["gh", "auth", "token"], capture_output=True,
+                           text=True, encoding="utf-8", check=True).stdout.strip()
+    rel_id = subprocess.run(
+        ["gh", "api", f"repos/{owner}/{repo}/releases/tags/{tag}", "--jq", ".id"],
+        capture_output=True, text=True, encoding="utf-8",
+        check=True).stdout.strip()
+    import urllib.request
+    # name= must be ASCII (see above); caller passes <id><suffix>, which is
+    # exactly what scripts.json / history point at.
+    url = (f"https://uploads.github.com/repos/{owner}/{repo}/releases/"
+           f"{rel_id}/assets?name={gh_name}")
+    req = urllib.request.Request(
+        url, data=asset.read_bytes(), method="POST",
+        headers={"Accept": "application/vnd.github+json",
+                 "Authorization": f"Bearer {token}",
+                 "Content-Type": "application/octet-stream"})
+    with urllib.request.urlopen(req, timeout=120) as resp:
+        got = json.loads(resp.read().decode("utf-8"))
+    if got.get("name") != gh_name:
+        raise RuntimeError(f"GitHub asset name mismatch: {got.get('name')!r} != {gh_name!r}")
+    print("GitHub asset:", got.get("browser_download_url"))
 
 
 def main() -> int:
@@ -226,7 +252,8 @@ def main() -> int:
         if args.Apply:
             attach_gitee(token, owner, repo, rel_id, asset, True)
     if args.Only != "gitee":
-        release_github(gh_owner, repo, tag, f"{args.script} {ver}", notes_path, asset, args.Apply)
+        release_github(gh_owner, repo, tag, f"{args.script} {ver}", notes_path, asset,
+                       f"{ident}{asset.suffix}", args.Apply)
 
     # 更新 history/<id>.json：追加/替换该版本一条（dry-run 不落盘）
     hist_file = HISTORY_DIR / (ident + ".json")
@@ -237,7 +264,9 @@ def main() -> int:
         entry = {
             "version": ver, "date": fields["date"],
             "gitee": f"https://gitee.com/{owner}/{repo}/releases/download/{tag}/{urllib.parse.quote(asset.name, safe='.')}",
-            "github": f"https://github.com/{gh_owner}/{repo}/releases/download/{tag}/{urllib.parse.quote(asset.name, safe='.')}",
+            # GitHub rejects URL-encoded Chinese asset names (stores default.ahk),
+            # so its asset is named <id><suffix>; Gitee keeps the Chinese name.
+            "github": f"https://github.com/{gh_owner}/{repo}/releases/download/{tag}/{ident}{asset.suffix}",
             "sizeKb": round(len(asset.read_bytes().replace(b"\r\n", b"\n")) / 1024, 1),
         }
         versions.append(entry)

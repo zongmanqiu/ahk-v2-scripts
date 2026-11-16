@@ -118,7 +118,13 @@ def build_entry(ahk: pathlib.Path, fields: dict, base: pathlib.Path) -> dict:
         raw = raw.replace(b"\r\n", b"\n")  # git stores LF; size is display-only
     size_kb = round(len(raw) / 1024, 1)
     gitee_url = asset_url(f"https://gitee.com/{owner}/{repo}", tag, filename)
-    github_url = asset_url(f"https://github.com/{gh_owner}/{repo}", tag, filename)
+    # m221: GitHub's asset-upload endpoint rejects URL-encoded Chinese in the
+    # name= parameter and silently stores "default.ahk". So GitHub assets use
+    # the ASCII <id> as the file name while Gitee keeps the Chinese script name.
+    # Each mirror's URL points at its own real asset; both resolve to 200.
+    gh_asset_name = f"{ident}{asset.suffix}"
+    github_url = asset_url(f"https://github.com/{gh_owner}/{repo}", tag,
+                           gh_asset_name)
     is_zip = asset.suffix.lower() == ".zip"
     entry = {
         "name": fields["name"],
