@@ -112,19 +112,19 @@ def build_entry(ahk: pathlib.Path, fields: dict, base: pathlib.Path) -> dict:
     asset = base / "dist" / (ahk.parent.name + ".zip")
     if not asset.is_file():
         asset = ahk
-    filename = asset.name
+    # m221: BOTH mirrors publish the asset under the same ASCII name
+    # <id>.ahk/.zip. GitHub's uploads endpoint mangles URL-encoded Chinese
+    # into "default.ahk"; using ASCII for both ends keeps the two URLs
+    # identical and the file name stable. The Chinese display name lives in
+    # the manifest's `name` field, not in the asset file name.
+    filename = f"{ident}{asset.suffix}"
     raw = asset.read_bytes()
     if asset.suffix.lower() == ".ahk":
         raw = raw.replace(b"\r\n", b"\n")  # git stores LF; size is display-only
     size_kb = round(len(raw) / 1024, 1)
     gitee_url = asset_url(f"https://gitee.com/{owner}/{repo}", tag, filename)
-    # m221: GitHub's asset-upload endpoint rejects URL-encoded Chinese in the
-    # name= parameter and silently stores "default.ahk". So GitHub assets use
-    # the ASCII <id> as the file name while Gitee keeps the Chinese script name.
-    # Each mirror's URL points at its own real asset; both resolve to 200.
-    gh_asset_name = f"{ident}{asset.suffix}"
     github_url = asset_url(f"https://github.com/{gh_owner}/{repo}", tag,
-                           gh_asset_name)
+                           filename)
     is_zip = asset.suffix.lower() == ".zip"
     entry = {
         "name": fields["name"],

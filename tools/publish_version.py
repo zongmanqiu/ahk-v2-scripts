@@ -138,15 +138,18 @@ def api_gitee(token: str, owner: str, repo: str, tag: str, name: str, body: str,
     return int(rel["id"])
 
 
-def attach_gitee(token: str, owner: str, repo: str, rel_id: int, asset: Path, apply: bool) -> None:
+def attach_gitee(token: str, owner: str, repo: str, rel_id: int, asset: Path,
+                 gitee_name: str, apply: bool) -> None:
     url = f"https://gitee.com/api/v5/repos/{owner}/{repo}/releases/{rel_id}/attach_files"
     if not apply:
-        print(f"[dry] Gitee attach_files {asset.name}")
+        print(f"[dry] Gitee attach_files {gitee_name}")
         return
     # token 只进 stdin 配置，不进 argv；用 curl.exe（不是 curl，后者是 PS 别名——Python 里无此问题，但保持一致）
+    # filename= overrides curl's default of using the local file name, so both
+    # mirrors publish the same ASCII name (see make_index.py).
     cfg = (f'url = "{url}"\n'
            f'header = "Authorization: Bearer {token}"\n'
-           f'form = "file=@{asset.as_posix()}"\n')
+           f'form = "file=@{asset.as_posix()};filename={gitee_name}"\n')
     p = subprocess.run(["curl.exe", "-s", "-K", "-"], input=cfg, text=True,
                        capture_output=True, cwd=ROOT)
     m = re.search(r'"browser_download_url"\s*:\s*"([^"]+)"', p.stdout or "")
@@ -250,7 +253,8 @@ def main() -> int:
     if args.Only != "github":
         rel_id = api_gitee(token, owner, repo, tag, f"{args.script} {ver}", notes, branch, args.Apply)
         if args.Apply:
-            attach_gitee(token, owner, repo, rel_id, asset, True)
+            attach_gitee(token, owner, repo, rel_id, asset,
+                         f"{ident}{asset.suffix}", True)
     if args.Only != "gitee":
         release_github(gh_owner, repo, tag, f"{args.script} {ver}", notes_path, asset,
                        f"{ident}{asset.suffix}", args.Apply)
@@ -263,9 +267,9 @@ def main() -> int:
         versions = [v for v in doc["versions"] if v["version"] != ver]
         entry = {
             "version": ver, "date": fields["date"],
-            "gitee": f"https://gitee.com/{owner}/{repo}/releases/download/{tag}/{urllib.parse.quote(asset.name, safe='.')}",
-            # GitHub rejects URL-encoded Chinese asset names (stores default.ahk),
-            # so its asset is named <id><suffix>; Gitee keeps the Chinese name.
+            # Both mirrors publish the same ASCII name <id><suffix>; the
+            # Chinese display name lives in scripts.json's `name` field.
+            "gitee": f"https://gitee.com/{owner}/{repo}/releases/download/{tag}/{ident}{asset.suffix}",
             "github": f"https://github.com/{gh_owner}/{repo}/releases/download/{tag}/{ident}{asset.suffix}",
             "sizeKb": round(len(asset.read_bytes().replace(b"\r\n", b"\n")) / 1024, 1),
         }
