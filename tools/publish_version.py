@@ -174,12 +174,38 @@ def api_gitee(token: str, owner: str, repo: str, tag: str, name: str, body: str,
     return int(rel["id"])
 
 
+def drop_gitee_same_name(token: str, owner: str, repo: str, rel_id: int,
+                         gitee_name: str) -> None:
+    """同版本重发前先删掉同名附件。
+
+    Gitee 的 attach_files 不做覆盖：同名再传会变成两条，而下载地址按名字解析、
+    命中的仍是先传的那条（2026-11-17 实测：新包传上去，URL 下载到的还是旧文件，
+    大小 25487 而不是 25517）。所以只上传不删除时「重发成功」是假的。
+    """
+    import urllib.request
+    url = (f"https://gitee.com/api/v5/repos/{owner}/{repo}/releases/"
+           f"{rel_id}/attach_files")
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        items = json.loads(resp.read().decode("utf-8", "replace"))
+    for item in items:
+        if item.get("name") != gitee_name:
+            continue
+        delete = urllib.request.Request(
+            f"{url}/{int(item['id'])}",
+            headers={"Authorization": f"Bearer {token}"}, method="DELETE")
+        with urllib.request.urlopen(delete, timeout=60) as resp:
+            resp.read()
+        print(f"Gitee 同名附件 {item['id']}（{item.get('size')}B）已删除，准备重传")
+
+
 def attach_gitee(token: str, owner: str, repo: str, rel_id: int, asset: Path,
                  gitee_name: str, apply: bool) -> None:
     url = f"https://gitee.com/api/v5/repos/{owner}/{repo}/releases/{rel_id}/attach_files"
     if not apply:
         print(f"[dry] Gitee attach_files {gitee_name}")
         return
+    drop_gitee_same_name(token, owner, repo, rel_id, gitee_name)
     # token 只进 stdin 配置，不进 argv；用 curl.exe（不是 curl，后者是 PS 别名——Python 里无此问题，但保持一致）
     # filename= overrides curl's default of using the local file name, so both
     # mirrors publish the same ASCII name (see make_index.py).
