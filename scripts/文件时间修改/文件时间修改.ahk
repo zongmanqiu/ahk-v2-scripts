@@ -1,5 +1,6 @@
 ; ==UserScript==
 ; @name         文件时间修改
+; @id           file-time-modifier
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @version      2.4.7
 ; @description  拖入文件或文件夹，点「更新时间」后设定创建/修改/访问时间；勾选「包含子文件（夹）」才连同内部所有文件与子文件夹一起生效

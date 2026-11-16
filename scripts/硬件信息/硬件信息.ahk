@@ -1,5 +1,6 @@
 ; ==UserScript==
 ; @name         硬件信息
+; @id           hardware-info
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @version      2.3.3
 ; @description  左侧导航分页查看 CPU/主板/内存/显卡/磁盘/网卡/显示器/系统，逐项列出详细规格

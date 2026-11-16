@@ -43,7 +43,8 @@ AutoHotkey v2 独立运行。脚本与宿主**分离**——本仓库是脚本�
 | 某个脚本的功能/入口/写入位置/风险 | 该脚本文件夹下的 `info/README.md` |
 | 某个脚本各版本改了什么 | 该脚本文件夹下的 `info/HISTORY.md`（只增不改） |
 | 目录怎么组织、头部块怎么写、注释/版本/测试/出货规矩 | [`开发指南.md`](开发指南.md) |
-| 脚本机器清单（版本/作者/raw 下载地址，供宿主以后下载用） | [`scripts.json`](scripts.json)（由 `tools/make_index.py` 生成） |
+| 脚本机器清单（版本/作者/release 附件地址，宿主下载用） | [`scripts.json`](scripts.json)（由 `tools/make_index.py` 生成） |
+| 某脚本的版本历史与双仓库下载地址 | `history/<英文id>.json`；宿主在「脚本详情」里给出可点击的 Gitee / GitHub 链接 |
 | 某个脚本自己的测试 | 该脚本文件夹下的 `test/`，跑 `python scripts/<名>/test/run.py`（只测这一个脚本） |
 | 单脚本静态检查（调色板/字号/版本/出货件一致） | `python tools/ui_static.py <脚本名>`（必须给名字，没有「跑全部」） |
 | 单脚本码表检查（枚举码是否与 SMBIOS/微软枚举逐项一致） | `python tools/check_codes.py <脚本名>`（同上，必须给名字；`--from-dmidecode <dmidecode.c>` 可校验工具自己的权威表） |

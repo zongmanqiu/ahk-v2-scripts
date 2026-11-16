@@ -3,6 +3,7 @@
   "scripts": [
     {
       "name": "双击防抖",
+      "id": "double-click-debounce",
       "version": "1.2.1",
       "date": "2026-11-15",
       "description": "用低级鼠标钩子分别拦截左键、右键、中键间隔过短的连击，各键最小间隔可在托盘设置（0 关闭，10~500 ms）",
@@ -13,11 +14,16 @@
       "entry": "托盘菜单「设置」；配置存于脚本旁同名 .ini",
       "path": "scripts/双击防抖/双击防抖.ahk",
       "size_kb": 8.6,
-      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/2026-11-16/scripts/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96.ahk",
-      "github": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/2026-11-16/scripts/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96.ahk"
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/double-click-debounce-1.2.1/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96.ahk",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/double-click-debounce-1.2.1/%E5%8F%8C%E5%87%BB%E9%98%B2%E6%8A%96.ahk",
+      "package": "",
+      "packageGithub": "",
+      "history": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/master/history/double-click-debounce.json",
+      "historyGithub": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/master/history/double-click-debounce.json"
     },
     {
       "name": "夜灯",
+      "id": "night-light",
       "version": "1.2.3",
       "date": "2026-11-15",
       "description": "滑块调屏幕色温（GammaRamp），并同步写入 Windows 夜间模式设置",
@@ -27,12 +33,17 @@
       "host": "AHKDeck 0.2.2+（亦可独立运行）",
       "entry": "托盘菜单「夜灯调整」；--selftest 为无 GUI 分支",
       "path": "scripts/夜灯/夜灯.ahk",
-      "size_kb": 21.9,
-      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/2026-11-16/scripts/%E5%A4%9C%E7%81%AF/%E5%A4%9C%E7%81%AF.ahk",
-      "github": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/2026-11-16/scripts/%E5%A4%9C%E7%81%AF/%E5%A4%9C%E7%81%AF.ahk"
+      "size_kb": 22.0,
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/night-light-1.2.3/%E5%A4%9C%E7%81%AF.ahk",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/night-light-1.2.3/%E5%A4%9C%E7%81%AF.ahk",
+      "package": "",
+      "packageGithub": "",
+      "history": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/master/history/night-light.json",
+      "historyGithub": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/master/history/night-light.json"
     },
     {
       "name": "打开方式清理",
+      "id": "open-with-cleaner",
       "version": "1.5.6",
       "date": "2026-11-16",
       "description": "扫描 Windows「打开方式」相关的 13 处注册表位置，列出并清理失效残留",
@@ -43,11 +54,16 @@
       "entry": "托盘菜单「打开方式清理」；--report / --selftest 为无 GUI 分支",
       "path": "scripts/打开方式清理/打开方式清理.ahk",
       "size_kb": 75.5,
-      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/2026-11-16/scripts/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86.ahk",
-      "github": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/2026-11-16/scripts/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86.ahk"
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/open-with-cleaner-1.5.6/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86.ahk",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/open-with-cleaner-1.5.6/%E6%89%93%E5%BC%80%E6%96%B9%E5%BC%8F%E6%B8%85%E7%90%86.ahk",
+      "package": "",
+      "packageGithub": "",
+      "history": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/master/history/open-with-cleaner.json",
+      "historyGithub": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/master/history/open-with-cleaner.json"
     },
     {
       "name": "文件哈希",
+      "id": "file-hash",
       "version": "1.2.1",
       "date": "2026-11-15",
       "description": "选或拖入文件，一趟读出 MD5/SHA1/SHA256/SHA384/SHA512 五种校验值，双击即复制",
@@ -57,12 +73,17 @@
       "host": "AHKDeck 0.2.2+（亦可独立运行）",
       "entry": "主窗口「选择文件」或拖放文件入窗；--selftest 为无 GUI 分支",
       "path": "scripts/文件哈希/文件哈希.ahk",
-      "size_kb": 17.4,
-      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/2026-11-16/scripts/%E6%96%87%E4%BB%B6%E5%93%88%E5%B8%8C/%E6%96%87%E4%BB%B6%E5%93%88%E5%B8%8C.ahk",
-      "github": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/2026-11-16/scripts/%E6%96%87%E4%BB%B6%E5%93%88%E5%B8%8C/%E6%96%87%E4%BB%B6%E5%93%88%E5%B8%8C.ahk"
+      "size_kb": 17.5,
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/file-hash-1.2.1/%E6%96%87%E4%BB%B6%E5%93%88%E5%B8%8C.ahk",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/file-hash-1.2.1/%E6%96%87%E4%BB%B6%E5%93%88%E5%B8%8C.ahk",
+      "package": "",
+      "packageGithub": "",
+      "history": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/master/history/file-hash.json",
+      "historyGithub": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/master/history/file-hash.json"
     },
     {
       "name": "文件时间修改",
+      "id": "file-time-modifier",
       "version": "2.4.7",
       "date": "2026-11-13",
       "description": "拖入文件或文件夹，点「更新时间」后设定创建/修改/访问时间；勾选「包含子文件（夹）」才连同内部所有文件与子文件夹一起生效",
@@ -73,11 +94,16 @@
       "entry": "主窗口「更新时间」按钮；拖放文件/文件夹入列表",
       "path": "scripts/文件时间修改/文件时间修改.ahk",
       "size_kb": 33.6,
-      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/2026-11-16/scripts/%E6%96%87%E4%BB%B6%E6%97%B6%E9%97%B4%E4%BF%AE%E6%94%B9/%E6%96%87%E4%BB%B6%E6%97%B6%E9%97%B4%E4%BF%AE%E6%94%B9.ahk",
-      "github": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/2026-11-16/scripts/%E6%96%87%E4%BB%B6%E6%97%B6%E9%97%B4%E4%BF%AE%E6%94%B9/%E6%96%87%E4%BB%B6%E6%97%B6%E9%97%B4%E4%BF%AE%E6%94%B9.ahk"
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/file-time-modifier-2.4.7/%E6%96%87%E4%BB%B6%E6%97%B6%E9%97%B4%E4%BF%AE%E6%94%B9.ahk",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/file-time-modifier-2.4.7/%E6%96%87%E4%BB%B6%E6%97%B6%E9%97%B4%E4%BF%AE%E6%94%B9.ahk",
+      "package": "",
+      "packageGithub": "",
+      "history": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/master/history/file-time-modifier.json",
+      "historyGithub": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/master/history/file-time-modifier.json"
     },
     {
       "name": "硬件信息",
+      "id": "hardware-info",
       "version": "2.3.3",
       "date": "2026-11-16",
       "description": "左侧导航分页查看 CPU/主板/内存/显卡/磁盘/网卡/显示器/系统，逐项列出详细规格",
@@ -87,12 +113,17 @@
       "host": "AHKDeck 0.3.5+（亦可独立运行）",
       "entry": "主窗口左侧八页导航（选中项高亮），窗口可缩放/最大化；列表右键复制本行/本页、Ctrl+C、F5 重采；--selftest 为无 GUI 分支",
       "path": "scripts/硬件信息/硬件信息.ahk",
-      "size_kb": 72.7,
-      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/2026-11-16/scripts/%E7%A1%AC%E4%BB%B6%E4%BF%A1%E6%81%AF/%E7%A1%AC%E4%BB%B6%E4%BF%A1%E6%81%AF.ahk",
-      "github": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/2026-11-16/scripts/%E7%A1%AC%E4%BB%B6%E4%BF%A1%E6%81%AF/%E7%A1%AC%E4%BB%B6%E4%BF%A1%E6%81%AF.ahk"
+      "size_kb": 24.9,
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/hardware-info-2.3.3/%E7%A1%AC%E4%BB%B6%E4%BF%A1%E6%81%AF.zip",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/hardware-info-2.3.3/%E7%A1%AC%E4%BB%B6%E4%BF%A1%E6%81%AF.zip",
+      "package": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/hardware-info-2.3.3/%E7%A1%AC%E4%BB%B6%E4%BF%A1%E6%81%AF.zip",
+      "packageGithub": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/hardware-info-2.3.3/%E7%A1%AC%E4%BB%B6%E4%BF%A1%E6%81%AF.zip",
+      "history": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/master/history/hardware-info.json",
+      "historyGithub": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/master/history/hardware-info.json"
     },
     {
       "name": "防休眠",
+      "id": "no-sleep",
       "version": "1.0.2",
       "date": "2026-11-15",
       "description": "两项托盘勾选阻止系统休眠／屏幕自动关闭，直调内核唤醒 API，退出自动还原",
@@ -103,8 +134,12 @@
       "entry": "托盘菜单「阻止系统休眠」「阻止屏幕关闭」；--selftest 为无 GUI 分支",
       "path": "scripts/防休眠/防休眠.ahk",
       "size_kb": 5.9,
-      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/2026-11-16/scripts/%E9%98%B2%E4%BC%91%E7%9C%A0/%E9%98%B2%E4%BC%91%E7%9C%A0.ahk",
-      "github": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/2026-11-16/scripts/%E9%98%B2%E4%BC%91%E7%9C%A0/%E9%98%B2%E4%BC%91%E7%9C%A0.ahk"
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/no-sleep-1.0.2/%E9%98%B2%E4%BC%91%E7%9C%A0.ahk",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/no-sleep-1.0.2/%E9%98%B2%E4%BC%91%E7%9C%A0.ahk",
+      "package": "",
+      "packageGithub": "",
+      "history": "https://gitee.com/qiuzongman/ahk-v2-scripts/raw/master/history/no-sleep.json",
+      "historyGithub": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/master/history/no-sleep.json"
     }
   ]
 }

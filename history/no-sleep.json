@@ -1,0 +1,13 @@
+{
+  "name": "防休眠",
+  "id": "no-sleep",
+  "versions": [
+    {
+      "version": "1.0.2",
+      "date": "2026-11-15",
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/no-sleep-1.0.2/%E9%98%B2%E4%BC%91%E7%9C%A0.ahk",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/no-sleep-1.0.2/%E9%98%B2%E4%BC%91%E7%9C%A0.ahk",
+      "sizeKb": 5.9
+    }
+  ]
+}

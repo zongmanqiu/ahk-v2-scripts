@@ -1,5 +1,6 @@
 ; ==UserScript==
 ; @name         夜灯
+; @id           night-light
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @version      1.2.3
 ; @description  滑块调屏幕色温（GammaRamp），并同步写入 Windows 夜间模式设置

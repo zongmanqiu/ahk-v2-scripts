@@ -1,0 +1,13 @@
+{
+  "name": "文件哈希",
+  "id": "file-hash",
+  "versions": [
+    {
+      "version": "1.2.1",
+      "date": "2026-11-15",
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/file-hash-1.2.1/%E6%96%87%E4%BB%B6%E5%93%88%E5%B8%8C.ahk",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/file-hash-1.2.1/%E6%96%87%E4%BB%B6%E5%93%88%E5%B8%8C.ahk",
+      "sizeKb": 17.5
+    }
+  ]
+}

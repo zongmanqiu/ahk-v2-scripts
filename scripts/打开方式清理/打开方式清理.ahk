@@ -1,5 +1,6 @@
 ; ==UserScript==
 ; @name         打开方式清理
+; @id           open-with-cleaner
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @version      1.5.6
 ; @description  扫描 Windows「打开方式」相关的 13 处注册表位置，列出并清理失效残留

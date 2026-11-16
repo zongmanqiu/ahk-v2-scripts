@@ -1,5 +1,6 @@
 ; ==UserScript==
 ; @name         文件哈希
+; @id           file-hash
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @version      1.2.1
 ; @description  选或拖入文件，一趟读出 MD5/SHA1/SHA256/SHA384/SHA512 五种校验值，双击即复制

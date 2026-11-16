@@ -3,7 +3,10 @@
 """新脚本骨架生成器（m213）。
 
 用法：
-  python tools/new_script.py <脚本名> "<一句话功能>"
+  python tools/new_script.py <脚本名> "<一句话功能>" <英文id>
+
+英文 id 唯一、小写字母开头、只含小写字母/数字/连字符（如 night-light），用作 release tag
+与版本索引的稳定键（m221）。改名不改 id，历史链接才不会断。
 
 输出 scripts/<名>/ 的完整骨架：<名>.ahk（§10 原生 UI 标准）、info/{README,HISTORY}.md、
 test/run.py（MCP 闭环冒烟入口）。只生成，不登记 scripts.json、不编译、不发版——
@@ -24,6 +27,7 @@ NAME_RE = re.compile(r"^[\w\u4e00-\u9fff-]{1,40}$")
 
 AHK = r"""; ==UserScript==
 ; @name         @@NAME@@
+; @id           @@ID@@
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @version      1.0.0
 ; @description  @@DESC@@
@@ -198,16 +202,29 @@ if __name__ == "__main__":
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
+    if len(sys.argv) != 4:
         print(__doc__)
         return 2
-    name, desc = sys.argv[1].strip(), sys.argv[2].strip()
+    name, desc, ident = sys.argv[1].strip(), sys.argv[2].strip(), sys.argv[3].strip()
     if not NAME_RE.fullmatch(name) or name in {".", ".."}:
         print("脚本名只能是中文/字母/数字/下划线/连字符（1-40 字）")
         return 2
     if not desc:
         print("功能描述不能为空")
         return 2
+    # m221: 英文 id 是 release tag 与版本索引的稳定键，ASCII 小写连字符、全仓唯一。
+    if not re.fullmatch(r"[a-z][a-z0-9-]*", ident):
+        print("英文 id 只能小写字母/数字/连字符，且以字母开头")
+        return 2
+    for other in SCRIPTS.iterdir():
+        if not other.is_dir() or other.name == name:
+            continue
+        ahk = other / (other.name + ".ahk")
+        if ahk.is_file():
+            m = re.search(r"^; @id\s+(\S+)", ahk.read_text(encoding="utf-8-sig"), re.M)
+            if m and m.group(1) == ident:
+                print(f"英文 id 已被「{other.name}」占用：{ident}")
+                return 2
     folder = SCRIPTS / name
     if folder.exists():
         print(f"已存在：{folder}（不覆盖）")
@@ -224,6 +241,7 @@ def main() -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             text.replace("@@NAME@@", name)
+                .replace("@@ID@@", ident)
                 .replace("@@DESC@@", desc)
                 .replace("@@DATE@@", date),
             encoding="utf-8", newline="\n",

@@ -1,5 +1,6 @@
 ; ==UserScript==
 ; @name         防休眠
+; @id           no-sleep
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @version      1.0.2
 ; @description  两项托盘勾选阻止系统休眠／屏幕自动关闭，直调内核唤醒 API，退出自动还原

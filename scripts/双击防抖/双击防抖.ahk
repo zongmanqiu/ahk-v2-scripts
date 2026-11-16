@@ -1,5 +1,6 @@
 ; ==UserScript==
 ; @name         双击防抖
+; @id           double-click-debounce
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @version      1.2.1
 ; @description  用低级鼠标钩子分别拦截左键、右键、中键间隔过短的连击，各键最小间隔可在托盘设置（0 关闭，10~500 ms）
