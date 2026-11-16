@@ -1,10 +1,10 @@
 ; ==UserScript==
 ; @name         硬件信息
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      2.3.2
+; @version      2.3.3
 ; @description  左侧导航分页查看 CPU/主板/内存/显卡/磁盘/网卡/显示器/系统，逐项列出详细规格
 ; @author       邱宗满
-; @date         2026-11-15
+; @date         2026-11-16
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -499,16 +499,18 @@ Collect() {
         ; DISPLAY\XMI23C3\5&c58316c&0&UID4353_0），按实例名配对才准。
         ; 早期按「第一个还没有尺寸的显示器」顺序配，多显示器时会把第二台的尺寸
         ; 塞给第一台（或第一台没报尺寸时整列错开一位）。
-        sizeOf := Map()
+        ; 变量名不能叫 sizeOf：那是 AutoHotkey_H 的专有内建，官方内核没有，
+        ; 名字撞上会被内核隔离门禁判为「依赖 AHK_H」（.main/test/kernel_gate）。
+        sizeByInst := Map()
         for o in wmi2.ExecQuery("SELECT * FROM WmiMonitorBasicDisplayParams") {
             hcm := NumOf(Prop(o, "MaxHorizontalImageSize", 0))
             vcm := NumOf(Prop(o, "MaxVerticalImageSize", 0))
             if (hcm > 0 && vcm > 0)
-                sizeOf[Trim(Prop(o, "InstanceName"))] := Format("{:.1f}", Sqrt(hcm * hcm + vcm * vcm) / 2.54)
+                sizeByInst[Trim(Prop(o, "InstanceName"))] := Format("{:.1f}", Sqrt(hcm * hcm + vcm * vcm) / 2.54)
         }
         for m in d["monitors"] {
-            if (sizeOf.Has(m["inst"]))
-                m["inch"] := sizeOf[m["inst"]]
+            if (sizeByInst.Has(m["inst"]))
+                m["inch"] := sizeByInst[m["inst"]]
         }
         ; 接口类型（HDMI / DisplayPort / DVI…）在第三类里，同样按 InstanceName 配对。
         connOf := Map()

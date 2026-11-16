@@ -40,7 +40,7 @@ GITHUB_OWNER = {"qiuzongman": "zongmanqiu"}
 # hard-coding a label, so every source (official or subscribed) follows
 # the same rule: the name comes from the json it was fetched from.
 MANIFEST_NAME = "AHKDeck"
-TAG = "2026-11-15"  # raw 地址钉里程碑 tag。同日多次发版加 -N 后缀（开发指南 §7.1）；每次重要更新换新 tag
+TAG = "2026-11-16"  # raw 地址钉里程碑 tag。同日多次发版加 -N 后缀（开发指南 §7.1）；每次重要更新换新 tag
 
 
 class HeaderError(ValueError):

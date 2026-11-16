@@ -1,10 +1,10 @@
 ; ==UserScript==
 ; @name         打开方式清理
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.5.5
+; @version      1.5.6
 ; @description  扫描 Windows「打开方式」相关的 13 处注册表位置，列出并清理失效残留
 ; @author       邱宗满
-; @date         2026-11-15
+; @date         2026-11-16
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -349,6 +349,13 @@ class FlatScroll {
         ; 原生灰条于是露出来（实测：滚动后右侧出现 16px 的 F0F0F0）。
         ; 不能等 Sync 的 60ms 兜底 —— 每次滚动动作后必须当场再藏一次。
         this.HideNative()
+        ; 再整块重画一遍：ENSUREVISIBLE 靠位块拷贝搬旧像素，新露出的行由控件自己
+        ; 补画，两者交界处会留下半截文字（实测滚动后零星几行只剩上半截，勾选框
+        ; 一起缺）。FALSE = 不擦背景，只作废区域，所以不会闪。
+        ; 第二个参数必须是 NULL（整个客户区）：传一个全 0 的 RECT 是「空区域」，
+        ; 等于什么也不作废。
+        DllCall("user32\InvalidateRect", "Ptr", this.lv.Hwnd, "Ptr", 0, "Int", false)
+        DllCall("user32\UpdateWindow", "Ptr", this.lv.Hwnd)
         this.top := this.ReadTop()
         this.Paint()
     }
@@ -1175,6 +1182,10 @@ BuildGui() {
     S.lv := g.Add("ListView", "x17 y73 w1066 h540 Checked -Grid -Multi -Hdr -E0x200 BackgroundFFFFFF c202B3A", HDR)
     S.lv.OnEvent("DoubleClick", OnRowDouble)
     S.lv.OnEvent("ContextMenu", OnRowContext)
+    ; LVS_EX_DOUBLEBUFFER：滚动重绘走后台缓冲。摘掉原生滚动条后竖向滚动由本脚本
+    ; 驱动（LVM_ENSUREVISIBLE），没有这一位时滚动后的整行重绘会和位块拷贝的残留
+    ; 叠在一起 —— 实测零星几行的文字只剩半截（勾选框一起缺），必须开。
+    DllCall("user32\SendMessageW", "Ptr", S.lv.Hwnd, "UInt", 0x1036, "Ptr", 0x10000, "Ptr", 0x10000)
 
     ; 原生滚动条由主题引擎画且拿不到颜色，整段复用已验证的 FlatScroll（槽 BAND / 滑块 ACCENT）。
     gScroll := FlatScroll(g, S.lv, 17, 73, 1066, 540)
@@ -1285,7 +1296,11 @@ LvNotify(wp, lp, msg, hwnd) {
             return 0
         ; 状态靠「有效 / 未找到 / 未知」的文字区分，不用绿橙灰，也不给数据行加粗。
         NumPut("UInt", 0x3A2B20, lp, 80)
-        return 2
+        ; 必须返回 CDRF_DODEFAULT(0)，不能返回 CDRF_NEWFONT(2)：这里只改 clrText，
+        ; 从未在 hdc 里 SelectObject 换过字体，而 2 等于告诉控件「字体已换」，
+        ; 控件随后用自己认定的字体重画整行 —— 实测滚动之后零星几行只剩文字上半截
+        ; （勾选框也一起被切），关掉这行返回或改回 0 即恢复。
+        return 0
     }
 }
 
