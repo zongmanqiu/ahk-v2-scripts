@@ -154,10 +154,17 @@ def api_gitee(token: str, owner: str, repo: str, tag: str, name: str, body: str,
         return -1
     import urllib.request
     # 先查后建：同版本重发时 POST 会因 tag 已存在抛 HTTPError、rel["id"] 崩在半途。
-    # 已存在就复用，让流程走到附件与 history 更新（dry-run 不查网，上面已返回）。
+    # 已存在就 PATCH 更新正文/标题（照 .main/build/7_release.ps1）——只复用 id 不更新，
+    # 会让 HISTORY 修订后的说明发不出去。PATCH 沿用同一份 payload（含 access_token）。
     existing = gitee_release_id(token, owner, repo, tag)
     if existing is not None:
-        print(f"Gitee release {tag} 已存在，复用 id={existing}（不重建）")
+        patch_url = f"{base}/{existing}"
+        req = urllib.request.Request(
+            patch_url, data=ascii_json(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"}, method="PATCH")
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            json.loads(resp.read().decode("utf-8", "replace"))
+        print(f"Gitee release {tag} 已存在，PATCH 更新正文 id={existing}")
         return existing
     req = urllib.request.Request(base, data=ascii_json(payload).encode("utf-8"),
                                  headers={"Content-Type": "application/json"}, method="POST")
