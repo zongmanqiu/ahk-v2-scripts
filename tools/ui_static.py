@@ -287,10 +287,12 @@ def check_script(name):
     cb_props = set()
     for mm in re.finditer(r'this\.([A-Za-z_]\w*)\s*:=\s*(cb|on[A-Z]\w*|callback)\b', text):
         cb_props.add(mm.group(1))
-    for mm in re.finditer(r'this\.([A-Za-z_]\w*)\s*:=\s*\w+', text):
-        # 也覆盖 this.cb := someFunc 这种直接赋函数名
+    for mm in re.finditer(r'this\.([A-Za-z_]\w*)\s*:=\s*(?=[A-Za-z_(])', text):
+        # 也覆盖 this.cb := SomeFunc / this.cb := (x) => ...。
+        # lookahead 只定位不吞掉右侧：原来的 \w+ 会把函数名吃掉，mm.end() 落到
+        # 函数名之后，下面的锚定匹配永远不成立 → 假阴性（K32 抓不到真违规）。
         rhs = text[mm.end():mm.end() + 40]
-        if re.match(r'\s*[A-Z]\w*\s*$', rhs) or re.match(r'\s*\(\w*\)\s*=>', rhs):
+        if re.match(r'[A-Z]\w*\b', rhs) or re.match(r'\(\w*\)\s*=>', rhs):
             cb_props.add(mm.group(1))
     for prop in sorted(cb_props):
         for mm in re.finditer(r'this\.' + re.escape(prop) + r'\s*\(', text):

@@ -11,7 +11,10 @@ __pycache__/
 *.pyc
 Thumbs.db
 Desktop.ini
-scripts/*/*/          # 脚本运行时产物区（同名文件夹，按产物准则）
+# 脚本运行时产物区（同名文件夹，按产物准则）
+scripts/*/*/
+!scripts/*/test/
+!scripts/*/info/
 dist/
 # publish_version.py 每次 dry-run 都会写发布说明草稿，不入库
 .temp/

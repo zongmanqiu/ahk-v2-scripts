@@ -9,7 +9,7 @@
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
-; @host         AHKDeck 0.3.5+（亦可独立运行）
+; @host         AHKDeck 0.3.6+（包模式需 0.3.6 起；亦可独立运行）
 ; @entry        主窗口左侧八页导航（选中项高亮），窗口可缩放/最大化；列表右键复制本行/本页、Ctrl+C、F5 重采；--selftest 为无 GUI 分支
 ; ==/UserScript==
 ;

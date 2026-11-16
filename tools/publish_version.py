@@ -81,7 +81,7 @@ def history_notes(history_path: Path, version: str) -> str:
     if not m:
         raise ValueError(f"HISTORY.md 没有 {version} 小节")
     notes = m.group(0).strip()
-    notes = re.sub(r"[A-Za-z]:\\\\[^\s`\"'）)]+", "[path]", notes)  # Windows 路径
+    notes = re.sub(r"[A-Za-z]:\\[^\s`\"'）)]*", "[path]", notes)  # Windows 路径（单反斜杠，覆盖 C:\Users\...）
     notes = re.sub(r"[\w.+-]+@[\w.-]+\.\w+", "[email]", notes)
     return notes
 
@@ -121,6 +121,29 @@ def ensure_gh_auth() -> None:
         raise SystemExit(3)
 
 
+def gitee_release_id(token: str, owner: str, repo: str, tag: str) -> int | None:
+    """同版本重发：查 tag 对应的 release id，已存在返回 id，否则 None。
+
+    token 走 header（不进 URL）——urlopen 抛错时 traceback 会带 URL，不能带凭据。
+    """
+    import urllib.request
+    import urllib.error
+    url = f"https://gitee.com/api/v5/repos/{owner}/{repo}/releases/tags/{tag}"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            rel = json.loads(resp.read().decode("utf-8", "replace"))
+        # Gitee 实测：tag 存在但还没建 release 时返回 HTTP 200 + body=`null`，
+        # 不是 404。json.loads('null') -> None，必须先判空再取 id。
+        if rel is None:
+            return None
+        return int(rel["id"])
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+
+
 def api_gitee(token: str, owner: str, repo: str, tag: str, name: str, body: str,
               branch: str, apply: bool) -> int:
     base = f"https://gitee.com/api/v5/repos/{owner}/{repo}/releases"
@@ -130,6 +153,12 @@ def api_gitee(token: str, owner: str, repo: str, tag: str, name: str, body: str,
         print(f"[dry] Gitee POST {base} tag={tag} (body {len(body)} chars)")
         return -1
     import urllib.request
+    # 先查后建：同版本重发时 POST 会因 tag 已存在抛 HTTPError、rel["id"] 崩在半途。
+    # 已存在就复用，让流程走到附件与 history 更新（dry-run 不查网，上面已返回）。
+    existing = gitee_release_id(token, owner, repo, tag)
+    if existing is not None:
+        print(f"Gitee release {tag} 已存在，复用 id={existing}（不重建）")
+        return existing
     req = urllib.request.Request(base, data=ascii_json(payload).encode("utf-8"),
                                  headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=60) as resp:
@@ -168,14 +197,29 @@ def release_github(owner: str, repo: str, tag: str, name: str, notes_path: Path,
     # `gh release create` makes GitHub store it as "default.ahk" (Windows argv
     # mangles it), so the manifest's URL 404s. uploads + name=<quoted> keeps
     # the asset name byte-for-byte identical to scripts.json.
-    run(["gh", "release", "create", tag, "--repo", f"{owner}/{repo}",
-         "--title", name, "--notes-file", str(notes_path)])
+    # 同版本重发：create 对已存在 tag 抛 CalledProcessError，先探测再决定建不建。
+    probe = subprocess.run(["gh", "release", "view", tag, "--repo", f"{owner}/{repo}"],
+                           capture_output=True, text=True, encoding="utf-8", check=False)
+    if probe.returncode == 0:
+        print(f"GitHub release {tag} 已存在，跳过 create")
+    else:
+        run(["gh", "release", "create", tag, "--repo", f"{owner}/{repo}",
+             "--title", name, "--notes-file", str(notes_path)])
     token = subprocess.run(["gh", "auth", "token"], capture_output=True,
                            text=True, encoding="utf-8", check=True).stdout.strip()
     rel_id = subprocess.run(
         ["gh", "api", f"repos/{owner}/{repo}/releases/tags/{tag}", "--jq", ".id"],
         capture_output=True, text=True, encoding="utf-8",
         check=True).stdout.strip()
+    # 同名资产已存在时 uploads 会 422；重发前先删同名，再传（两端文件名一致，见 make_index）。
+    old_ids = subprocess.run(
+        ["gh", "api", f"repos/{owner}/{repo}/releases/tags/{tag}",
+         "--jq", f'.assets[] | select(.name == "{gh_name}") | .id'],
+        capture_output=True, text=True, encoding="utf-8", check=True).stdout.split()
+    for aid in old_ids:
+        subprocess.run(["gh", "api", "-X", "DELETE",
+                        f"repos/{owner}/{repo}/releases/assets/{aid}"],
+                       capture_output=True, check=True)
     import urllib.request
     # name= must be ASCII (see above); caller passes <id><suffix>, which is
     # exactly what scripts.json / history point at.
@@ -265,13 +309,18 @@ def main() -> int:
         doc = json.loads(hist_file.read_text(encoding="utf-8")) if hist_file.is_file() else {
             "name": args.script, "id": ident, "versions": []}
         versions = [v for v in doc["versions"] if v["version"] != ver]
+        # sizeKb 与 make_index.py 同口径：只对 .ahk 做 CRLF→LF，zip 按原始字节，
+        # 否则 history 的 sizeKb 会与 scripts.json 的 size_kb 对不上。
+        asset_raw = asset.read_bytes()
+        if asset.suffix.lower() == ".ahk":
+            asset_raw = asset_raw.replace(b"\r\n", b"\n")
         entry = {
             "version": ver, "date": fields["date"],
             # Both mirrors publish the same ASCII name <id><suffix>; the
             # Chinese display name lives in scripts.json's `name` field.
             "gitee": f"https://gitee.com/{owner}/{repo}/releases/download/{tag}/{ident}{asset.suffix}",
             "github": f"https://github.com/{gh_owner}/{repo}/releases/download/{tag}/{ident}{asset.suffix}",
-            "sizeKb": round(len(asset.read_bytes().replace(b"\r\n", b"\n")) / 1024, 1),
+            "sizeKb": round(len(asset_raw) / 1024, 1),
         }
         versions.append(entry)
         versions.sort(key=lambda v: [int(x) for x in v["version"].split(".")])

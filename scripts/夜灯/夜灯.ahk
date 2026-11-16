@@ -2,10 +2,10 @@
 ; @name         夜灯
 ; @id           night-light
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.2.3
+; @version      1.2.4
 ; @description  滑块调屏幕色温（GammaRamp），并同步写入 Windows 夜间模式设置
 ; @author       邱宗满
-; @date         2026-11-15
+; @date         2026-11-16
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -237,11 +237,21 @@ AddVarint(arr, v) {
     }
 }
 
+; 带边界的单字节读取：越界返回 -1（合法字节 0..255），让所有 0xXX 比较自然失败。
+; ParseNightLight 读的是注册表里 Windows 写的 CloudStore blob，畸形值不能让脚本读到缓冲区外。
+GetByte(data, p) {
+    if (p < 0 || p >= data.Size)
+        return -1
+    return NumGet(data, p, "UChar")
+}
+
 ReadVarint(buf, pos) {
     val := 0
     shift := 0
     n := 0
     Loop 10 {
+        if (pos + n >= buf.Size)    ; 截断的 varint：在缓冲区末尾停，不读越界字节
+            break
         c := NumGet(buf, pos + n, "UChar")
         val |= (c & 0x7F) << shift
         n += 1
@@ -313,24 +323,24 @@ RegWriteBinary(root, path, name, buf) {
 ParseNightLight(data) {
     if (!data || data.Size < 12)
         return 0
-    if (NumGet(data, 0, "UChar") != 0x43 || NumGet(data, 1, "UChar") != 0x42)
+    if (GetByte(data, 0) != 0x43 || GetByte(data, 1) != 0x42)
         return 0
     p := 4
-    if (NumGet(data, p, "UChar") != 0x0A)
+    if (GetByte(data, p) != 0x0A)
         return 0
     p += 1
     Loop 16 {
         if (p >= data.Size)
             return 0
-        c := NumGet(data, p, "UChar")
+        c := GetByte(data, p)
         p += 1
         if (c = 0)
             break
     }
-    if (NumGet(data, p, "UChar") != 0x2A)
+    if (GetByte(data, p) != 0x2A)
         return 0
     p += 1
-    if (NumGet(data, p, "UChar") != 0x06)
+    if (GetByte(data, p) != 0x06)
         return 0
     p += 1
     tsPos := p
@@ -338,23 +348,27 @@ ParseNightLight(data) {
     tsVal := r[1]
     tsLen := r[2]
     p += tsLen
-    if (NumGet(data, p, "UChar") != 0x2A)
+    if (GetByte(data, p) != 0x2A)
         return 0
     p += 1
-    if (NumGet(data, p, "UChar") != 0x2B)
+    if (GetByte(data, p) != 0x2B)
         return 0
     p += 1
     p += 1
     r := ReadVarint(data, p)
-    count := r[1]
     p += r[2]
     innerPos := p
+    ; count 来自 blob 里的 varint，畸形值可以大到天文数字。把它夹到"缓冲区还剩多少"，
+    ; 否则 while 会把 pos 推到缓冲区外：既有越界读，也会让自测空转。
+    count := Min(r[1], data.Size - innerPos)
     tempPos := 0
     tempVal := 0
     i := 0
     while (i + 2 < count) {
         pos := innerPos + i
-        if (NumGet(data, pos, "UChar") = 0xCF && NumGet(data, pos + 1, "UChar") = 0x28) {
+        ; 温度字段是 2 字节 varint，WriteNightLight 要在 tempPos/tempPos+1 各写 1 字节。
+        ; 必须确认这 2 字节都落在缓冲区内，否则定位出来的 tempPos 会让写回越界。
+        if (GetByte(data, pos) = 0xCF && GetByte(data, pos + 1) = 0x28 && pos + 3 < data.Size) {
             tempPos := pos + 2
             rr := ReadVarint(data, tempPos)
             zig := rr[1]
@@ -598,6 +612,32 @@ RunSelfTest(path) {
     Emit((info && info.tempPos > 0 ? "PASS " : "FAIL ") "温度字段可定位")
     Emit((ParseNightLight(Buffer(16, 0xFF)) = 0 ? "PASS " : "FAIL ") "坏数据解析被拒")
 
+    ; 截断/畸形值：合法模板的每个前缀都要能安全解析——既不越界读，也不能给出
+    ; 一个会让 WriteNightLight 写越界的 tempPos（tempPos+1 必须仍在缓冲区内）。
+    ; 这组用例专治"读指针越过缓冲区"和"count 被伪造得极大导致空转/越界"。
+    tpl := ArrToBuffer(BuildTemplate(3400, 1762900000))
+    okTrunc := true
+    Loop tpl.Size {
+        m := A_Index - 1
+        if (m < 4)
+            continue
+        part := Buffer(m, 0)
+        n := 0
+        Loop m {
+            NumPut("UChar", NumGet(tpl, n, "UChar"), part, n)
+            n += 1
+        }
+        inf := ParseNightLight(part)
+        if (inf && inf.tempPos && inf.tempPos + 1 >= m)
+            okTrunc := false
+    }
+    Emit((okTrunc ? "PASS " : "FAIL ") "截断模板逐前缀解析不越界")
+
+    ; 伪造超大 count：varint 连发 9 个续字节 + 收尾，旧版会据此把循环推到缓冲区外。
+    evil := ArrToBuffer([0x43, 0x42, 0x01, 0x00, 0x0A, 0x00, 0x2A, 0x06, 0x02, 0x2A, 0x2B, 0x0E,
+        0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x7F, 0x01])
+    Emit((ParseNightLight(evil) ? "PASS " : "FAIL ") "伪造超大 count 不崩溃")
+
     Emit((IntensityToKelvin(0) = MAX_K && IntensityToKelvin(100) = MIN_K ? "PASS " : "FAIL ") "强度端点 0/100")
     okk := true
     i := 0
@@ -677,7 +717,4 @@ Persistent(true)
 ; 自绘轨的点击/键盘是全局消息，注册一次即可；面板关掉后 gTrack=0，回调自行空转。
 OnMessage(0x201, OnTrackDown)
 OnMessage(0x100, OnTrackKey)
-; 首次运行为便于观察直接弹面板；不需要可删掉下一行。
-SetTimer(() => ShowPanel(), -600)
-
 OnExit(OnScriptExit)

@@ -83,6 +83,10 @@ def stage(src: Path, files: list[Path], staging: Path, name: str) -> Path:
 
 
 def pack_with_7z(seven_zip: str, staging_root: Path, out_zip: Path) -> None:
+    # 7z a 是「追加」：不清旧包会把已删除的条目留在 zip 里，与 Python 回退
+    # 分支的 "w"（覆盖）行为不一致。先删再打，两个后端语义统一。
+    if out_zip.exists():
+        out_zip.unlink()
     # -mx=9：Deflate 极限；-tzip：标准 zip（不是 7z 格式，宿主与资源管理器都能解）
     subprocess.run(
         [seven_zip, "a", "-tzip", "-mx=9", str(out_zip), "."],

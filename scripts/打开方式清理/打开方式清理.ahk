@@ -2,7 +2,7 @@
 ; @name         打开方式清理
 ; @id           open-with-cleaner
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.5.6
+; @version      1.5.7
 ; @description  扫描 Windows「打开方式」相关的 13 处注册表位置，列出并清理失效残留
 ; @author       邱宗满
 ; @date         2026-11-16
@@ -1339,7 +1339,7 @@ FillList() {
     ; 横条跟着再冒一条 —— 屏幕上就是「空列表 + 两条原生灰条」（实测截图复现）。
     ; 藏起来的窗口一个像素都不画，填完再 SW_SHOW，一次干净的整幅重绘。
     DllCall("user32\ShowWindow", "Ptr", S.lv.Hwnd, "Int", 0)      ; SW_HIDE
-    SendMessage(0x100B, 0, 0, S.lv.Hwnd)
+    SendMessage(0x000B, 0, 0, S.lv.Hwnd)  ; WM_SETREDRAW=FALSE 抑制重绘
     S.lv.Delete()
     for e in S.view
         S.lv.Add(e.sel ? "Check" : "", "", e.ext, e.prog, e.name, L.Status[e.status], L.Source[e.src])
@@ -1366,7 +1366,7 @@ FillList() {
     ; 一起重刷，样式位还在就等于把灰条画到屏幕上。
     if gScroll
         gScroll.HideNative()
-    SendMessage(0x100B, 1, 0, S.lv.Hwnd)
+    SendMessage(0x000B, 1, 0, S.lv.Hwnd)  ; WM_SETREDRAW=TRUE 恢复重绘
     DllCall("user32\ShowWindow", "Ptr", S.lv.Hwnd, "Int", 5)      ; SW_SHOW
     ; 藏过一次以后焦点会丢，键盘翻页、Delete 键就哑了，补回来。
     ; 本来就没焦点时（启动后第一次填表）也把焦点给列表，省得用户还要先点一下。
@@ -1615,14 +1615,14 @@ DropRows(gone) {
     SyncChecks()
     foc := S.lv.GetNext(0, "Focused")
     focEntry := foc ? S.view[foc] : 0
-    SendMessage(0x100B, 0, 0, S.lv.Hwnd)
+    SendMessage(0x000B, 0, 0, S.lv.Hwnd)  ; WM_SETREDRAW=FALSE 抑制重绘
     i := S.view.Length
     while i >= 1 {
         if gone.Has(S.view[i].full)
             S.lv.Delete(i)
         i--
     }
-    SendMessage(0x100B, 1, 0, S.lv.Hwnd)
+    SendMessage(0x000B, 1, 0, S.lv.Hwnd)  ; WM_SETREDRAW=TRUE 恢复重绘
     keep := []
     for e in S.all
         if !gone.Has(e.full)
@@ -1694,15 +1694,17 @@ CleanupMru(key) {
     try RegWrite(neu, "REG_SZ", key, "MRUList")
 }
 
-Backup(targets) {
-    try DirCreate(HistDir())
+Backup(targets, dir := "") {
+    ; dir 为空走用户真实 history/（正常删除流程）；自测传入隔离目录，绝不碰用户的备份。
+    d := dir != "" ? dir : HistDir()
+    try DirCreate(d)
     txt := ""
     for i, e in targets {
         txt .= "[" i "] Hive=" HiveToken(e.hive) "`tKey=" e.key "`tValue=" e.val
              . "`tType=" (e.sub ? "SubKey" : "Value") "`tProgram=" e.prog
              . "`tExt=" e.ext "`tFullPath=" e.full "`n"
     }
-    try FileAppend(txt, HistDir() "\backup_" FormatTime(, "yyyyMMdd_HHmmss") ".txt", "UTF-8")
+    try FileAppend(txt, d "\backup_" FormatTime(, "yyyyMMdd_HHmmss") ".txt", "UTF-8")
 }
 
 Elevate() {
@@ -1885,6 +1887,7 @@ RunSelfTest(path) {
     base := "Software\Classes\AHKDeckOwcSelfTest"
     hk := "HKCU\" base
     if KeyExists(hk) {
+        try DirCreate(SubStr(path, 1, InStr(path, "\", false, -1) - 1))
         FileAppend("FAIL 合成键已存在，放弃自测以免覆盖未知状态`n", path, "UTF-8")
         ExitApp(1)
     }
@@ -1897,9 +1900,13 @@ RunSelfTest(path) {
     e2 := {hive: "HKCU", key: base, val: "SomeProgId", sub: true, prog: "selftest-prog", ext: "*", full: ""}
     e3 := {hive: "HKCR", key: "AHKDeckOwcSelfTest\OpenWithList", val: "b", sub: false, prog: "mspaint.exe", ext: ".txt", full: ""}
 
-    Backup([e1, e2, e3])
+    ; 自测备份落进输出目录旁的隔离子目录，绝不写用户真实 history/：
+    ; 原实现按 mtime 在真实 history/ 里取"最新"backup 再删，同一秒内有用户备份就会误删。
+    testBakDir := SubStr(path, 1, InStr(path, "\", false, -1) - 1) "\selftest-backup"
+    try DirCreate(testBakDir)
+    Backup([e1, e2, e3], testBakDir)
     bf := "", bt := 0
-    Loop Files HistDir() "\backup_*.txt" {
+    Loop Files testBakDir "\backup_*.txt" {
         if (A_LoopFileTimeModified > bt)
             bt := A_LoopFileTimeModified, bf := A_LoopFileFullPath
     }
@@ -1931,6 +1938,7 @@ RunSelfTest(path) {
     ; DropRows 原地摘行（隐藏列表，不碰注册表）
     S.all := [], S.view := [], S.seen := Map()
     g2 := Gui("+ToolWindow", "selftest-lv")
+    S.gui := g2  ; FillList/UpdateStatus 会读 S.gui.FocusedCtrl，selftest 不走 BuildGui，必须自己挂上
     S.lv := g2.Add("ListView", "w400 h200 Checked", ["✓", "扩展名", "程序", "名称", "状态", "来源"])
     S.sb := FlatStatus(g2, 0, 0, 400, 30, "")
     g2.Show("Hide")
@@ -1963,12 +1971,14 @@ RunSelfTest(path) {
     fr := S.lv.GetNext(0, "Focused")
     Emit((fr && S.lv.GetText(fr, 2) = ".t1" ? "PASS " : "FAIL ") "排序焦点随行")
     g2.Destroy()
-    S.lv := 0, S.sb := 0
+    S.gui := 0, S.lv := 0, S.sb := 0
 
     try RegDeleteKey(hk)
     Emit((!KeyExists(hk) ? "PASS " : "FAIL ") "合成键清理")
     if (bf != "")
         try FileDelete(bf)
+    try FileDelete(testBakDir "\*.txt")
+    try DirDelete(testBakDir, false)
     fails := 0
     for ln in StrSplit(out, "`n")
         if (SubStr(ln, 1, 5) = "FAIL ")
