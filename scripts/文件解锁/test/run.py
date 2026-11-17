@@ -4,14 +4,15 @@
 前置：把 <名>.ahk 复制进 .build/Scripts 平铺目录，再运行：
   python scripts/文件解锁/test/run.py
 
-四层断言：
+五层断言：
   1. --selftest 纯逻辑（NtPath / FPIF 找占用者 / 占用检测 / 删除保留名文件）；
   2. inspect_ui 几何：窗口 672×352 + 列表/两按钮/状态条齐全，按钮宽≈文字宽+32（K25）；
+     以及缩放/最大化后各块跟随（列表吸收纵向余量、路径列吸收横向余量、状态条贴底）；
   3. 拖入即检测端到端（WM_DROPFILES 注入）：
-     - nul 保留名文件 → 状态「未占用」（不误报进程）；
-     - holder 占用的文件 → 状态「被占用 · 进程名」。
+     - nul 保留名文件 → 状态「无占用」（不误报进程）；
+     - holder 占用的文件 → 状态列直接显示进程名。
   4. 解除占用全链路：点按钮 → 确认框出现 → 向 #32770 投 WM_COMMAND(IDYES=6)
-     → 状态「解除完成」且行状态翻回「未占用」。
+     → 状态「解除完成」且行状态翻回「无占用」。
 
 确认框注入口径：AHK v2 的 MsgBox 返回的是按钮**字符串**（"Yes"），不是 6；
 比较写成 `!= 6` 会恒真、每次都当作用户取消（1.1.2 的真 bug）。
@@ -72,7 +73,7 @@ def test_selftest(m, sid):
     for kw in ("NtPath 盘符前缀", "NtPath UNC 前缀", "FPIF 找出占用本文件的进程 PID",
                "删除保留名文件 con"):
         assert kw in text, f"自测断言缺失: {kw}"
-    print("  [1/4] selftest 全绿（NtPath / FPIF / 占用检测 / 删保留名）")
+    print("  [1/5] selftest 全绿（NtPath / FPIF / 占用检测 / 删保留名）")
 
 
 def read_ui(m, sess):
@@ -106,7 +107,7 @@ def test_geometry(m, sess):
     assert btn_y and min(btn_y) in (288, 289), f"操作行 y 应≈288: {btn_y}"
     # 状态条在 y322；窗口高 352 = 322 + 30，无多余底部空白
     assert c.get("h") == 352, f"窗口高应=352（状态条贴底）: {c}"
-    print("  [2/4] GUI 几何 672×352 + 列表/解除占用/删除按钮齐全（无输入框、无顶部说明行）")
+    print("  [2/5] GUI 几何 672×352 + 列表/解除占用/删除按钮齐全（无输入框、无顶部说明行）")
 
 
 def find_gui_hwnd():
@@ -161,9 +162,9 @@ def test_drop_detect(m, sess):
         drop_files(hwnd, nul)
         time.sleep(1.5)
         rows = list_rows(m, sess)
-        assert rows and any("nul" in str(r) and "未占用" in str(r) for r in rows), \
-            f"nul 未显示未占用（可能误报占用进程）: {rows}"
-        print("  [3/4] 拖入即检测：nul 保留名文件正确显示「未占用」")
+        assert rows and any("nul" in str(r) and "无占用" in str(r) for r in rows), \
+            f"nul 未显示无占用（可能误报占用进程）: {rows}"
+        print("  [3/5] 拖入即检测：nul 保留名文件正确显示「无占用」")
 
         # holder 占用的普通文件
         demo = os.path.join(d, "locked.txt")
@@ -176,9 +177,9 @@ def test_drop_detect(m, sess):
             drop_files(hwnd, demo)
             time.sleep(1.5)
             rows2 = list_rows(m, sess)
-            assert rows2 and any("locked.txt" in str(r) and "被占用" in str(r) for r in rows2), \
-                f"被占用文件未显示占用状态: {rows2}"
-            print("        holder 占用文件正确显示「被占用 · 进程名」")
+            assert rows2 and any("locked.txt" in str(r) and "AutoHotkey64.exe" in str(r)
+                                 for r in rows2), f"占用文件未显示占用程序名: {rows2}"
+            print("        占用项状态列直接显示占用程序名 AutoHotkey64.exe")
         finally:
             holder.terminate()
             try:
@@ -188,6 +189,54 @@ def test_drop_detect(m, sess):
             HOLDER_OUT.unlink(missing_ok=True)
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def test_resize(m, sess):
+    """缩放/最大化：列表吸收余量、路径列变宽、状态条贴底、按钮不被拉伸。"""
+    _user32.MoveWindow.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                   ctypes.c_int, ctypes.c_int, wintypes.BOOL]
+    hwnd = find_gui_hwnd()
+    assert hwnd, "找不到文件解锁窗口"
+
+    _user32.MoveWindow(hwnd, 80, 80, 920, 560, True)
+    time.sleep(0.8)
+    w = read_ui(m, sess)["windows"][0]
+    c = w["client"]
+    assert c["w"] > 800 and c["h"] > 480, f"放大未生效: {c}"
+    ctrls = w.get("controls", [])
+    lv = [x for x in ctrls if "ListView" in x.get("class", "")][0]
+    assert lv["client"]["w"] > 750, f"列表未随宽度拉伸: {lv['client']}"
+
+    def bottom_bar(controls, ch):
+        # 状态条=贴底那一行中带文字的最宽控件（文案随流程变化，不能按内容找）
+        cand = [x for x in controls
+                if (x.get("text") or "").strip()
+                and abs(x["client"]["y"] + x["client"]["h"] - ch) <= 1]
+        return max(cand, key=lambda x: x["client"]["w"])["client"] if cand else None
+
+    st = bottom_bar(ctrls, c["h"])
+    assert st and abs(st["y"] + st["h"] - c["h"]) <= 1, f"状态条未贴底: {st} vs {c}"
+    widths = {x.get("text"): (x.get("client") or {}).get("w") for x in ctrls
+              if x.get("text") in ("解除占用", "删除")}
+    assert widths.get("解除占用") in range(80, 92) and widths.get("删除") in range(54, 66), \
+        f"缩放后按钮被拉伸: {widths}"
+
+    _user32.ShowWindow(hwnd, 3)                 # SW_MAXIMIZE
+    time.sleep(0.9)
+    cm = read_ui(m, sess)["windows"][0]["client"]
+    assert cm["w"] >= 900 and cm["h"] >= 560, f"最大化未生效: {cm}"
+    ctrls_m = read_ui(m, sess)["windows"][0].get("controls", [])
+    stm = [x for x in ctrls_m
+           if (x.get("text") or "").strip()
+           and abs(x["client"]["y"] + x["client"]["h"] - cm["h"]) <= 1]
+    assert stm, f"最大化后找不到贴底状态条: {cm}"
+    lv_m = [x for x in ctrls_m if "ListView" in x.get("class", "")][0]
+    assert lv_m["client"]["w"] > 900, f"最大化后列表未拉伸: {lv_m['client']}"
+    _user32.ShowWindow(hwnd, 9)                 # SW_RESTORE
+    time.sleep(0.6)
+    cr = read_ui(m, sess)["windows"][0]["client"]
+    assert abs(cr["h"] - c["h"]) <= 2 and abs(cr["w"] - c["w"]) <= 2, f"还原尺寸不对: {cr} vs {c}"
+    print("  [4/5] 缩放/最大化：列表吸收余量、状态条贴底、按钮不被拉伸")
 
 
 def click_control(m, sess, text):
@@ -218,8 +267,8 @@ def test_unlock_flow(m, sess):
         drop_files(hwnd, demo)
         time.sleep(1.5)
         rows = list_rows(m, sess)
-        assert any("flow.txt" in str(r) and "被占用" in str(r) for r in rows), \
-            f"占用文件未显示「被占用」: {rows}"
+        assert any("flow.txt" in str(r) and "AutoHotkey64.exe" in str(r) for r in rows), \
+            f"占用文件未显示占用程序名: {rows}"
 
         click_control(m, sess, "解除占用")
         time.sleep(1.2)
@@ -230,13 +279,13 @@ def test_unlock_flow(m, sess):
 
         rows = list_rows(m, sess)
         row = [r for r in rows if "flow.txt" in str(r)]
-        assert row and "未占用" in str(row[0]), f"解除后仍显示占用: {row}"
+        assert row and "无占用" in str(row[0]), f"解除后仍显示占用: {row}"
         texts = [c.get("text", "") for w in read_ui(m, sess).get("windows", [])
                  for c in w.get("controls", [])]
         joined = " | ".join(t for t in texts if t)
         assert "解除完成" in joined, f"状态条未显示解除完成（可能又被当成取消）: {joined}"
         assert "已取消" not in joined, f"确认框的「是」被误判为取消: {joined}"
-        print("  [4/4] 解除占用全链路：确认「是」→ 结束后状态翻回「未占用」")
+        print("  [5/5] 解除占用全链路：确认「是」→ 结束后状态翻回「无占用」")
     finally:
         if holder is not None and holder.poll() is None:
             holder.terminate()
@@ -258,6 +307,7 @@ def main():
         time.sleep(1)
         test_geometry(m, sess)
         test_drop_detect(m, sess)
+        test_resize(m, sess)
         test_unlock_flow(m, sess)
 
         out = m.call("get_session_output", {"session": sess})

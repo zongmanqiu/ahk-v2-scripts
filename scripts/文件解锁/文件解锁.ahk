@@ -2,7 +2,7 @@
 ; @name         文件解锁
 ; @id           file-unlock
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.1.3
+; @version      1.2.0
 ; @description  拖入文件或文件夹，自动检测占用，一键解除占用或删除（含保留名/权限受限文件）
 ; @author       邱宗满
 ; @date         2026-11-17
@@ -204,15 +204,12 @@ CollectFiles(path, out, depth := 0) {
 ; ── \\?\ 直通路径（绕过保留设备名/长路径的 Win32 解析）─────────────────
 NtPath(path) {
     ; 绝对路径（盘符或 UNC）。UNC 用 \\?\UNC\ 前缀。
-    if (SubStr(path, 1, 2) = "\\") {
-        rest := SubStr(path, 3)
-        ; 去掉开头的 \\?\ 若已有
-        if (SubStr(rest, 1, 4) = "?\")
-            return path
-        return "\\?\UNC\" rest
-    }
+    ; ★ 幂等：已带 \\?\ 必须原样返回。先判 UNC 会把 \\?\E:\x 当成 UNC
+    ;   （rest="?\E:\x"）拼成 \\?\UNC\?\E:\x，DeleteFileW 直接回 err=53。
     if (SubStr(path, 1, 4) = "\\?\")
         return path
+    if (SubStr(path, 1, 2) = "\\")
+        return "\\?\UNC\" SubStr(path, 3)
     return "\\?\" StrReplace(path, "/", "\")
 }
 
@@ -254,6 +251,8 @@ DeleteOneFile(path) {
 
 ; ── 删除文件夹（自底向上；reparse point 只删链接本身，绝不递归进目标）──
 ; 返回 [成功?, 错误信息]
+; ★ 必须逐层掏空：只删顶层文件的话，子目录里的文件还在 →
+;   RemoveDirectoryW 得 err=145（目录非空），整棵树删不掉。
 DeleteDirTree(path) {
     np := NtPath(path)
     ; reparse point：目录 junction/symlink 用 RemoveDirectoryW 直接删，不进内部
@@ -264,23 +263,37 @@ DeleteDirTree(path) {
             return [true, ""]
         return [false, "reparse err=" DllCall("kernel32\GetLastError", "UInt")]
     }
-    ; 先删内部所有文件（用直通路径枚举，处理保留名）
-    Loop Files NtPath(path) "\*", "F"
-        DeleteOneFile(A_LoopFilePath)
-    ; 再自底向上删子目录
+    fails := []
+    ; 子目录按深度降序：先掏空最深的目录，再删它
     dirs := []
     CollectDirsOnly(path, dirs, 0)
     for d in ArrayToDeepFirst(dirs) {
+        DeleteFilesIn(d, fails)
         DllCall("kernel32\SetFileAttributesW", "Str", NtPath(d), "UInt", FILE_ATTRIBUTE_NORMAL, "Int")
-        DllCall("kernel32\RemoveDirectoryW", "Str", NtPath(d), "Int")
+        if !DllCall("kernel32\RemoveDirectoryW", "Str", NtPath(d), "Int") {
+            e := DllCall("kernel32\GetLastError", "UInt")
+            if (e != ERROR_FILE_NOT_FOUND && e != ERROR_PATH_NOT_FOUND)
+                fails.Push(ShortName(d) " dir err=" e)
+        }
     }
+    DeleteFilesIn(path, fails)
     DllCall("kernel32\SetFileAttributesW", "Str", np, "UInt", FILE_ATTRIBUTE_NORMAL, "Int")
     if DllCall("kernel32\RemoveDirectoryW", "Str", np, "Int")
         return [true, ""]
     e := DllCall("kernel32\GetLastError", "UInt")
     if (e = ERROR_FILE_NOT_FOUND || e = ERROR_PATH_NOT_FOUND)
         return [true, ""]
-    return [false, "dir err=" e]
+    detail := fails.Length ? "；" fails.Length " 项未删（首个：" fails[1] "）" : ""
+    return [false, "dir err=" e detail]
+}
+
+; 删掉某目录下的直接文件，失败项追加进 fails
+DeleteFilesIn(dir, fails) {
+    Loop Files NtPath(dir) "\*", "F" {
+        r := DeleteOneFile(A_LoopFilePath)
+        if !r[1]
+            fails.Push(ShortName(A_LoopFilePath) " " r[2])
+    }
 }
 
 CollectDirsOnly(path, out, depth) {
@@ -330,14 +343,19 @@ PaintCaption() {
     }
 }
 
-; 1px 描边按钮（范本同名函数）
+; 1px 描边按钮（范本同名函数）。返回 {outer, inner, w, h} 以便缩放时整体搬移。
 FlatButton(g, x, y, w, h, text, fill, edge, cb) {
     f := g.Add("Text", "x" x " y" y " w" w " h" h " Background" edge)
     b := g.Add("Text", "x" (x + 1) " y" (y + 1) " w" (w - 2) " h" (h - 2)
         " Background" fill " c202B3A +0x200 Center", text)
     f.OnEvent("Click", (*) => cb())
     b.OnEvent("Click", (*) => cb())
-    return b
+    return { outer: f, inner: b, w: w, h: h }
+}
+
+MoveBtn(btn, x, y) {
+    btn.outer.Move(x, y, btn.w, btn.h)
+    btn.inner.Move(x + 1, y + 1, btn.w - 2, btn.h - 2)
 }
 
 ; ── 量文字实际宽（GDI，s10 Microsoft YaHei UI）───────────────────────────
@@ -365,55 +383,107 @@ MeasureTextWidth(text, size := 10, fontName := "Microsoft YaHei UI") {
 }
 
 ; ── GUI ────────────────────────────────────────────────────────────────
-; 版式照 UI规范 §10.3：客户区 672×352。垂直节奏 TOP(12) → 列表区 → BLOCK_GAP(6)
+; 版式照 UI规范 §10.3：默认客户区 672×352。垂直节奏 TOP(12) → 列表区 → BLOCK_GAP(6)
 ; → 操作行(28) → BLOCK_GAP(6) → 状态条(30) → 贴窗口底。
-; 按钮宽由文字实际宽 + 2×BTN_PAD 定（§10.3.1-2，K25），整组右对齐到行右缘（656），
-; 余量留在按钮组左侧放汇总信息。列表区整体框（父块露 1px 线），caption 同 #DCE8F7。
+; 窗口可缩放/最大化（长路径需要）：所有块由 Layout(cw,ch) 按客户区重算，
+; 只有列表区吸收纵向余量、路径列吸收横向余量；按钮宽由文字宽定，永不被拉伸。
 BuildGui() {
-    global gGui, gList, gStatus, gInfo
-    global EDGE, ROW_W, INLINE_GAP, BLOCK_GAP, H_ACTION, H_STATUS, H_HEADER
-    gGui := Gui("", "文件解锁")
+    global gGui, gList, gStatus, gInfo, gFrame, gBand, gHdrPath, gHdrType, gHdrOcc
+    global gStBand, gBtnUnlock, gBtnDel
+    global EDGE, ROW_W
+    gGui := Gui("+Resize", "文件解锁")
     gGui.BackColor := "F7F9FC"
     gGui.SetFont("s10", "Microsoft YaHei UI")
     gGui.OnEvent("Close", (*) => ExitApp())
     gGui.OnEvent("DropFiles", OnDropFiles)
-
-    RIGHT := EDGE + ROW_W                       ; 行右缘 656
-    LIST_Y := 12                                ; 列表区顶（原顶部说明行已去掉）
-    LIST_H := 270                               ; 列表区整体高
-    LIST_BOTTOM := LIST_Y + LIST_H              ; 282
+    gGui.OnEvent("Size", OnSize)
 
     ; 列表区整体框：外框 → 标题带（内缩 1px）→ 列表（内缩 1px、紧贴标题带底）
-    gGui.Add("Text", "x" EDGE " y" LIST_Y " w" ROW_W " h" LIST_H " BackgroundB7C8E0")
-    gGui.Add("Text", "x" (EDGE + 1) " y" (LIST_Y + 1) " w" (ROW_W - 2) " h" H_HEADER " BackgroundDCE8F7")
+    gFrame := gGui.Add("Text", "x" EDGE " y12 w" ROW_W " h270 BackgroundB7C8E0")
+    gBand := gGui.Add("Text", "x" (EDGE + 1) " y13 w" (ROW_W - 2) " h" H_HEADER " BackgroundDCE8F7")
     gGui.SetFont("s10 Bold", "Microsoft YaHei UI")
-    gGui.Add("Text", "x" (EDGE + 7) " y" (LIST_Y + 1) " w424 h" H_HEADER " BackgroundDCE8F7 c202B3A +0x200", "路径")
-    gGui.Add("Text", "x451 y" (LIST_Y + 1) " w72 h" H_HEADER " BackgroundDCE8F7 c202B3A +0x200", "类型")
-    gGui.Add("Text", "x527 y" (LIST_Y + 1) " w122 h" H_HEADER " BackgroundDCE8F7 c202B3A +0x200", "状态")
+    gHdrPath := gGui.Add("Text", "x24 y13 w424 h" H_HEADER " BackgroundDCE8F7 c202B3A +0x200", "路径")
+    gHdrType := gGui.Add("Text", "x451 y13 w72 h" H_HEADER " BackgroundDCE8F7 c202B3A +0x200", "类型")
+    gHdrOcc := gGui.Add("Text", "x527 y13 w122 h" H_HEADER " BackgroundDCE8F7 c202B3A +0x200", "占用程序")
     gGui.SetFont("s10 Norm", "Microsoft YaHei UI")
-    gList := gGui.Add("ListView", "x" (EDGE + 1) " y" (LIST_Y + 1 + H_HEADER) " w" (ROW_W - 2)
-        . " h" (LIST_H - 2 - H_HEADER) " -Hdr -Multi -E0x200 BackgroundFFFFFF c202B3A"
-        , ["路径", "类型", "状态"])
+    gList := gGui.Add("ListView", "x" (EDGE + 1) " y" (13 + H_HEADER) " w" (ROW_W - 2)
+        . " h" (270 - 2 - H_HEADER) " -Hdr -Multi -E0x200 BackgroundFFFFFF c202B3A"
+        , ["路径", "类型", "占用程序"])
     gList.ModifyCol(1, 430), gList.ModifyCol(2, 78), gList.ModifyCol(3, 128)
 
-    ; 操作行：按钮组右对齐，余量在左侧放汇总信息
-    ACT_Y := LIST_BOTTOM + BLOCK_GAP            ; 288
-    wDel := MeasureTextWidth("删除") + 32       ; 58
-    wUnlock := MeasureTextWidth("解除占用") + 32 ; 84
-    xDel := RIGHT - wDel                        ; 598
-    xUnlock := xDel - INLINE_GAP - wUnlock      ; 506
-    gInfo := gGui.Add("Text", "x" EDGE " y" ACT_Y " w" (xUnlock - EDGE - INLINE_GAP)
-        . " h" H_ACTION " BackgroundF7F9FC c202B3A +0x200", "")
-    FlatButton(gGui, xUnlock, ACT_Y, wUnlock, H_ACTION, "解除占用", "EBF2FB", "B7C8E0", (*) => UnlockSelected())
-    FlatButton(gGui, xDel, ACT_Y, wDel, H_ACTION, "删除", "EBF2FB", "B7C8E0", (*) => DeleteSelected())
+    gInfo := gGui.Add("Text", "x" EDGE " y288 w474 h" H_ACTION " BackgroundF7F9FC c202B3A +0x200", "")
+    gBtnUnlock := FlatButton(gGui, 506, 288, MeasureTextWidth("解除占用") + 32, H_ACTION
+        , "解除占用", "EBF2FB", "B7C8E0", (*) => UnlockSelected())
+    gBtnDel := FlatButton(gGui, 598, 288, MeasureTextWidth("删除") + 32, H_ACTION
+        , "删除", "EBF2FB", "B7C8E0", (*) => DeleteSelected())
 
     ; 状态条：贴窗口底
-    ST_Y := ACT_Y + H_ACTION + BLOCK_GAP        ; 322
-    gGui.Add("Text", "x0 y" ST_Y " w672 h" H_STATUS " BackgroundDCE8F7")
-    gStatus := gGui.Add("Text", "x12 y" ST_Y " w648 h" H_STATUS " BackgroundDCE8F7 c202B3A +0x200", "就绪 · 拖入文件开始")
+    gStBand := gGui.Add("Text", "x0 y322 w672 h" H_STATUS " BackgroundDCE8F7")
+    gStatus := gGui.Add("Text", "x12 y322 w648 h" H_STATUS " BackgroundDCE8F7 c202B3A +0x200", "就绪 · 拖入文件开始")
 
-    gGui.Show("w672 h" (ST_Y + H_STATUS) " Center")   ; 352
+    gGui.Show("w672 h352 Center")
     PaintCaption()
+    Layout(672, 352)
+}
+
+; 缩放：按客户区重算所有块的位置与尺寸（Size 事件给的是客户区 w/h）
+OnSize(guiObj, minMax, width, height) {
+    if (minMax = -1 || width < 1 || height < 1)
+        return
+    Layout(width, height)
+}
+
+; 拖拽边框最小值（WM_GETMINMAXINFO，ptMinTrackSize 在 offset 24/28）
+; ★ 该消息在 Gui() 构造期间就会到达，此时 gGui 尚未赋值 —— 必须先判空。
+OnMessage(0x24, WM_GetMinMaxInfo)
+WM_GetMinMaxInfo(wParam, lParam, msg, hwnd) {
+    global gGui
+    if (!IsSet(gGui) || !IsObject(gGui))
+        return
+    if (hwnd != gGui.Hwnd)
+        return
+    NumPut("Int", 560, lParam, 24)
+    NumPut("Int", 340, lParam, 28)
+}
+
+Layout(cw, ch) {
+    global EDGE, INLINE_GAP, BLOCK_GAP, H_ACTION, H_STATUS, H_HEADER
+    global gFrame, gBand, gHdrPath, gHdrType, gHdrOcc, gList, gInfo
+    global gStBand, gStatus, gBtnUnlock, gBtnDel
+    RIGHT := cw - EDGE
+    ROW_W := cw - 2 * EDGE
+    LIST_Y := 12
+    ST_Y := ch - H_STATUS
+    ACT_Y := ST_Y - BLOCK_GAP - H_ACTION
+    LIST_H := ACT_Y - BLOCK_GAP - LIST_Y
+    if (LIST_H < 60)
+        LIST_H := 60
+
+    gFrame.Move(EDGE, LIST_Y, ROW_W, LIST_H)
+    gBand.Move(EDGE + 1, LIST_Y + 1, ROW_W - 2, H_HEADER)
+    ; 列头与列表列宽同步：状态列固定 122、类型列固定 72，路径列吸收余量
+    occX := RIGHT - 129
+    typeX := occX - 76
+    pathX := EDGE + 8
+    pathW := typeX - 4 - pathX
+    gHdrPath.Move(pathX, LIST_Y + 1, pathW, H_HEADER)
+    gHdrType.Move(typeX, LIST_Y + 1, 72, H_HEADER)
+    gHdrOcc.Move(occX, LIST_Y + 1, 122, H_HEADER)
+    gList.Move(EDGE + 1, LIST_Y + 1 + H_HEADER, ROW_W - 2, LIST_H - 2 - H_HEADER)
+    ; 列宽与列头同步：路径列吃掉余量（632 = 客户区宽 − 34 边框 − 78 − 128 − 2 余量）
+    c1 := cw - 242
+    if (c1 < 120)
+        c1 := 120
+    gList.ModifyCol(1, c1), gList.ModifyCol(2, 78), gList.ModifyCol(3, 128)
+
+    xDel := RIGHT - gBtnDel.w
+    xUn := xDel - INLINE_GAP - gBtnUnlock.w
+    MoveBtn(gBtnUnlock, xUn, ACT_Y)
+    MoveBtn(gBtnDel, xDel, ACT_Y)
+    gInfo.Move(EDGE, ACT_Y, xUn - EDGE - INLINE_GAP, H_ACTION)
+
+    gStBand.Move(0, ST_Y, cw, H_STATUS)
+    gStatus.Move(12, ST_Y, cw - 24, H_STATUS)
 }
 
 ; 拖入：加入列表并逐项自动检测
@@ -460,12 +530,14 @@ KindOf(path) {
     return (a & 0x10) ? "文件夹" : "文件"
 }
 
-; 检测单个项：展开其下文件，区分「被占用 / 无权限 / 未占用」
+; 检测单个项：展开其下文件，得出「占用程序 / 无占用 / 无权限」
+; it.occ 是机器可读码（free/locked/denied/gone），it.names 才是给人看的文案
 DetectItem(it) {
     files := []
     CollectFiles(it.path, files)
     if !files.Length {
         it.owners := []
+        it.occ := "gone"
         it.names := "不存在"
         return
     }
@@ -486,14 +558,20 @@ DetectItem(it) {
     names := ""
     for pid in pidSet {
         it.owners.Push(pid)
-        names .= (names ? ", " : "") ProcName(pid)
+        nm := ProcName(pid)
+        if !InStr("," names ",", "," nm ",")        ; 同名多进程只显示一次
+            names .= (names ? ", " : "") nm
     }
-    if (lockedCount > 0)
-        it.names := names ? "被占用 · " names : "被占用（未知进程）"
-    else if (deniedCount > 0)
-        it.names := "无权限（需管理员）"           ; ACL 拒绝 ≠ 被占用，不误导去解占用
-    else
-        it.names := "未占用"
+    if (lockedCount > 0) {
+        it.occ := "locked"
+        it.names := names ? names : "占用（无法识别进程）"
+    } else if (deniedCount > 0) {
+        it.occ := "denied"
+        it.names := "无权限"                       ; ACL 拒绝 ≠ 被占用，不误导去解占用
+    } else {
+        it.occ := "free"
+        it.names := "无占用"
+    }
 }
 
 RefreshList() {
@@ -514,9 +592,9 @@ UpdateSummary() {
         it := gItems[A_Index]
         if !IsObject(it)
             continue
-        if InStr(it.names, "被占用")
+        if (it.occ = "locked")
             locked++
-        else if InStr(it.names, "无权限")
+        else if (it.occ = "denied")
             denied++
     }
     txt := gItems.Length " 项 · " locked " 项被占用"
@@ -702,6 +780,9 @@ RunSelfTest(path) {
     ; 2. NtPath 直通路径
     Emit((NtPath("C:\a\b") = "\\?\C:\a\b" ? "PASS " : "FAIL ") "NtPath 盘符前缀")
     Emit((NtPath("\\srv\share\x") = "\\?\UNC\srv\share\x" ? "PASS " : "FAIL ") "NtPath UNC 前缀")
+    ; 幂等：Loop Files 给出的 \\?\ 路径会再进 DeleteOneFile/ClearAttributes，
+    ; 重复前缀会变成 \\?\UNC\?\E:\... → DeleteFileW err=53（1.1.3 的真 bug）
+    Emit((NtPath("\\?\C:\a\b") = "\\?\C:\a\b" ? "PASS " : "FAIL ") "NtPath 幂等（已带 \\?\ 不加第二层）")
 
     ; 3. 占用检测 + FPIF 找占用者：CreateFileW(share=3) 持有才构成真正占用
     tf := A_Temp "\ahkdeck-unlock-selftest-" myPid ".txt"
@@ -735,6 +816,16 @@ RunSelfTest(path) {
         Emit("SKIP  造保留名文件失败（环境限制）")
     }
     try DirDelete(dp, 1)
+
+    ; 5. 删含子目录的文件夹：覆盖 "Loop Files 给出 \\?\ 路径 → 再进删除函数" 这条链路
+    dt := A_Temp "\ahkdeck_deltree_" myPid
+    try DirDelete(dt, 1)
+    try DirCreate(dt "\sub")
+    try FileAppend("x", dt "\a.txt")
+    try FileAppend("y", dt "\sub\b.txt")
+    dres := DeleteDirTree(dt)
+    Emit((dres[1] ? "PASS " : "FAIL ") "删除含子目录的文件夹（自底向上）" (dres[1] ? "" : " " dres[2]))
+    try DirDelete(dt, 1)
 
     fails := 0
     for ln in StrSplit(out, "`n")
