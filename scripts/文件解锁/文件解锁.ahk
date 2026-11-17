@@ -2,7 +2,7 @@
 ; @name         文件解锁
 ; @id           file-unlock
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.1.0
+; @version      1.1.1
 ; @description  拖入文件或文件夹，自动检测占用，一键解除占用或删除（含保留名/权限受限文件）
 ; @author       邱宗满
 ; @date         2026-11-17
@@ -54,6 +54,16 @@ FILE_PROCESS_IDS_USING_FILE := 47
 FILE_FLAG_BACKUP_SEMANTICS := 0x2000000
 FILE_ATTRIBUTE_NORMAL := 0x80
 FILE_ATTRIBUTE_REPARSE_POINT := 0x400
+
+; ── 版式常量（UI规范 §10.2.3）──────────────────────────────────────────
+EDGE := 16                ; 内容行左边距；行宽 = 客户区宽 − 2×EDGE
+ROW_W := 640              ; 内容行宽（672 − 32）
+BTN_PAD := 16             ; 按钮文字左右各留白
+INLINE_GAP := 8           ; 同排控件/按钮之间
+BLOCK_GAP := 6            ; 不同语义区块之间（列表区 → 操作行 → 状态条）
+H_ACTION := 28            ; 按钮/操作行高
+H_STATUS := 30            ; 状态条高
+H_HEADER := 26            ; 列头带高
 
 ; 系统关键进程保护名单（小写文件名）：结束它们会导致系统不稳定。
 CRITICAL_PROCS := Map("smss.exe", 1, "csrss.exe", 1, "wininit.exe", 1, "winlogon.exe", 1
@@ -326,44 +336,79 @@ FlatButton(g, x, y, w, h, text, fill, edge, cb) {
     return b
 }
 
+; ── 量文字实际宽（GDI，s10 Microsoft YaHei UI）───────────────────────────
+; UI规范 §10.3.1-2：按钮宽 = 文字实际宽 + 2×BTN_PAD，禁止为了铺满撑宽（K25）。
+; 实测 dpi=96 下：四汉字 52 → 按钮 84；两汉字 26 → 58。带缓存。
+MeasureTextWidth(text, size := 10, fontName := "Microsoft YaHei UI") {
+    static cache := Map()
+    if cache.Has(text)
+        return cache[text]
+    hdc := DllCall("user32\GetDC", "Ptr", 0, "Ptr")
+    dpiY := DllCall("gdi32\GetDeviceCaps", "Ptr", hdc, "Int", 90, "Int")
+    h := DllCall("gdi32\CreateFontW"
+        , "Int", -DllCall("kernel32\MulDiv", "Int", size, "Int", dpiY, "Int", 72, "Int")
+        , "Int", 0, "Int", 0, "Int", 0, "Int", 400, "UInt", 0, "UInt", 0, "UInt", 0
+        , "UInt", 1, "UInt", 0, "UInt", 0, "UInt", 5, "UInt", 0, "Str", fontName, "Ptr")
+    old := DllCall("gdi32\SelectObject", "Ptr", hdc, "Ptr", h, "Ptr")
+    sz := Buffer(8, 0)
+    DllCall("gdi32\GetTextExtentPoint32W", "Ptr", hdc, "Str", text, "Int", StrLen(text), "Ptr", sz)
+    w := NumGet(sz, 0, "Int")
+    DllCall("gdi32\SelectObject", "Ptr", hdc, "Ptr", old, "Ptr")
+    DllCall("gdi32\DeleteObject", "Ptr", h, "Int")
+    DllCall("user32\ReleaseDC", "Ptr", 0, "Ptr", hdc)
+    cache[text] := w
+    return w
+}
+
 ; ── GUI ────────────────────────────────────────────────────────────────
-; 版式照 UI规范 §10：客户区 672×400，内容行 x16 w640；同排控件同 y 同 h，
-; 文字控件固定高 +0x200 垂直居中；列表区整体框（父块露 1px 线），
-; caption 由 DWM 染成与状态条同一个 #DCE8F7。坐标按 §10.3.1 规则自算。
+; 版式照 UI规范 §10.3：客户区 672×352。垂直节奏 TOP(12) → 列表区 → BLOCK_GAP(6)
+; → 操作行(28) → BLOCK_GAP(6) → 状态条(30) → 贴窗口底。
+; 按钮宽由文字实际宽 + 2×BTN_PAD 定（§10.3.1-2，K25），整组右对齐到行右缘（656），
+; 余量留在按钮组左侧放汇总信息。列表区整体框（父块露 1px 线），caption 同 #DCE8F7。
 BuildGui() {
     global gGui, gList, gStatus, gInfo
+    global EDGE, ROW_W, INLINE_GAP, BLOCK_GAP, H_ACTION, H_STATUS, H_HEADER
     gGui := Gui("", "文件解锁")
     gGui.BackColor := "F7F9FC"
     gGui.SetFont("s10", "Microsoft YaHei UI")
     gGui.OnEvent("Close", (*) => ExitApp())
     gGui.OnEvent("DropFiles", OnDropFiles)
 
-    ; 顶部说明行（一句话告知交互）
-    gGui.Add("Text", "x16 y12 w640 h26 BackgroundDCE8F7 c202B3A +0x200"
-        , "  把文件或文件夹拖进列表，自动检测占用")
+    RIGHT := EDGE + ROW_W                       ; 行右缘 656
+    LIST_Y := 12                                ; 列表区顶（原顶部说明行已去掉）
+    LIST_H := 270                               ; 列表区整体高
+    LIST_BOTTOM := LIST_Y + LIST_H              ; 282
 
-    ; 列表区整体框：外框 y46 h280，标题带与列表内缩 1px
-    gGui.Add("Text", "x16 y46 w640 h280 BackgroundB7C8E0")
-    gGui.Add("Text", "x17 y47 w638 h26 BackgroundDCE8F7")
+    ; 列表区整体框：外框 → 标题带（内缩 1px）→ 列表（内缩 1px、紧贴标题带底）
+    gGui.Add("Text", "x" EDGE " y" LIST_Y " w" ROW_W " h" LIST_H " BackgroundB7C8E0")
+    gGui.Add("Text", "x" (EDGE + 1) " y" (LIST_Y + 1) " w" (ROW_W - 2) " h" H_HEADER " BackgroundDCE8F7")
     gGui.SetFont("s10 Bold", "Microsoft YaHei UI")
-    gGui.Add("Text", "x23 y47 w424 h26 BackgroundDCE8F7 c202B3A +0x200", "路径")
-    gGui.Add("Text", "x451 y47 w72 h26 BackgroundDCE8F7 c202B3A +0x200", "类型")
-    gGui.Add("Text", "x527 y47 w122 h26 BackgroundDCE8F7 c202B3A +0x200", "状态")
+    gGui.Add("Text", "x" (EDGE + 7) " y" (LIST_Y + 1) " w424 h" H_HEADER " BackgroundDCE8F7 c202B3A +0x200", "路径")
+    gGui.Add("Text", "x451 y" (LIST_Y + 1) " w72 h" H_HEADER " BackgroundDCE8F7 c202B3A +0x200", "类型")
+    gGui.Add("Text", "x527 y" (LIST_Y + 1) " w122 h" H_HEADER " BackgroundDCE8F7 c202B3A +0x200", "状态")
     gGui.SetFont("s10 Norm", "Microsoft YaHei UI")
-    gList := gGui.Add("ListView", "x17 y73 w638 h252 -Hdr -Multi -E0x200 BackgroundFFFFFF c202B3A"
+    gList := gGui.Add("ListView", "x" (EDGE + 1) " y" (LIST_Y + 1 + H_HEADER) " w" (ROW_W - 2)
+        . " h" (LIST_H - 2 - H_HEADER) " -Hdr -Multi -E0x200 BackgroundFFFFFF c202B3A"
         , ["路径", "类型", "状态"])
     gList.ModifyCol(1, 430), gList.ModifyCol(2, 78), gList.ModifyCol(3, 128)
 
-    ; 操作行：解除占用 / 删除（右对齐，各 120 宽，间隔 8）
-    FlatButton(gGui, 416, 334, 112, 30, "解除占用", "EBF2FB", "B7C8E0", (*) => UnlockSelected())
-    FlatButton(gGui, 536, 334, 120, 30, "删除", "EBF2FB", "B7C8E0", (*) => DeleteSelected())
+    ; 操作行：按钮组右对齐，余量在左侧放汇总信息
+    ACT_Y := LIST_BOTTOM + BLOCK_GAP            ; 288
+    wDel := MeasureTextWidth("删除") + 32       ; 58
+    wUnlock := MeasureTextWidth("解除占用") + 32 ; 84
+    xDel := RIGHT - wDel                        ; 598
+    xUnlock := xDel - INLINE_GAP - wUnlock      ; 506
+    gInfo := gGui.Add("Text", "x" EDGE " y" ACT_Y " w" (xUnlock - EDGE - INLINE_GAP)
+        . " h" H_ACTION " BackgroundF7F9FC c202B3A +0x200", "")
+    FlatButton(gGui, xUnlock, ACT_Y, wUnlock, H_ACTION, "解除占用", "EBF2FB", "B7C8E0", (*) => UnlockSelected())
+    FlatButton(gGui, xDel, ACT_Y, wDel, H_ACTION, "删除", "EBF2FB", "B7C8E0", (*) => DeleteSelected())
 
-    ; 信息行 + 状态条
-    gInfo := gGui.Add("Text", "x16 y372 w640 h22 BackgroundF7F9FC c202B3A +0x200", "")
-    gGui.Add("Text", "x0 y398 w672 h30 BackgroundDCE8F7")
-    gStatus := gGui.Add("Text", "x12 y398 w648 h30 BackgroundDCE8F7 c202B3A +0x200", "就绪 · 拖入文件开始")
+    ; 状态条：贴窗口底
+    ST_Y := ACT_Y + H_ACTION + BLOCK_GAP        ; 322
+    gGui.Add("Text", "x0 y" ST_Y " w672 h" H_STATUS " BackgroundDCE8F7")
+    gStatus := gGui.Add("Text", "x12 y" ST_Y " w648 h" H_STATUS " BackgroundDCE8F7 c202B3A +0x200", "就绪 · 拖入文件开始")
 
-    gGui.Show("w672 h428 Center")
+    gGui.Show("w672 h" (ST_Y + H_STATUS) " Center")   ; 352
     PaintCaption()
 }
 

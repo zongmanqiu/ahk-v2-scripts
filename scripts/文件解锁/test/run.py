@@ -6,7 +6,7 @@
 
 三层断言：
   1. --selftest 纯逻辑（NtPath / FPIF 找占用者 / 占用检测 / 删除保留名文件）；
-  2. inspect_ui 几何：窗口 672×428 + 列表/两按钮/状态条齐全（新形态无输入框/检测按钮）；
+  2. inspect_ui 几何：窗口 672×352 + 列表/两按钮/状态条齐全，按钮宽≈文字宽+32（K25）；
   3. 拖入即检测端到端（WM_DROPFILES 注入）：
      - nul 保留名文件 → 状态「未占用」（不误报进程）；
      - holder 占用的文件 → 状态「被占用 · 进程名」。
@@ -81,14 +81,28 @@ def test_geometry(m, sess):
     assert wins, "inspect_ui 没找到窗口"
     w = wins[0]
     c = w.get("client", {})
-    assert c.get("w") == 672 and c.get("h") == 428, f"窗口尺寸错: {c}"
+    assert c.get("w") == 672 and c.get("h") == 352, f"窗口尺寸错: {c}"
     texts = " ".join((x.get("text", "") or "") for x in w.get("controls", []))
-    assert "把文件或文件夹拖进列表" in texts, "缺说明行"
+    assert "把文件或文件夹拖进列表" not in texts, "顶部说明行应已移除"
     assert "解除占用" in texts and "删除" in texts, "缺操作按钮"
     classes = [x.get("class", "") for x in w.get("controls", [])]
     assert any("ListView" in k for k in classes), "缺列表"
     assert "Edit" not in classes, "新形态不应有输入框"
-    print("  [2/3] GUI 几何 672×428 + 列表/解除占用/删除按钮齐全（无输入框）")
+    # 按钮宽 ≈ 文字宽 + 32（K25）：解除占用 84、删除 58（dpi=96）
+    def cw(c):
+        return (c.get("client") or {}).get("w")
+    def cy(c):
+        return (c.get("client") or {}).get("y")
+    widths = {x.get("text"): cw(x) for x in w.get("controls", [])
+              if x.get("text") in ("解除占用", "删除")}
+    assert widths.get("解除占用", 0) in range(80, 92), f"解除占用按钮宽应≈84: {widths}"
+    assert widths.get("删除", 0) in range(54, 66), f"删除按钮宽应≈58: {widths}"
+    # 垂直节奏（§10.3.1-3）：操作行 288 → 状态条 322（BLOCK_GAP=6）→ 贴窗口底 352
+    btn_y = [cy(x) for x in w.get("controls", []) if x.get("text") in ("解除占用", "删除")]
+    assert btn_y and min(btn_y) in (288, 289), f"操作行 y 应≈288: {btn_y}"
+    # 状态条在 y322；窗口高 352 = 322 + 30，无多余底部空白
+    assert c.get("h") == 352, f"窗口高应=352（状态条贴底）: {c}"
+    print("  [2/3] GUI 几何 672×352 + 列表/解除占用/删除按钮齐全（无输入框、无顶部说明行）")
 
 
 def find_gui_hwnd():
