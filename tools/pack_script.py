@@ -23,6 +23,7 @@ zip**——宿主用系统自带能力解压（资源管理器同一套代码）
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -112,26 +113,45 @@ def verify(out_zip: Path, name: str) -> None:
         assert f"@name" in head and name in head, "入口脚本 @name 与包名不一致"
 
 
-def main() -> int:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("name", help="脚本名（scripts/<名>/ 目录）")
-    ap.add_argument("--out", default=str(REPO / "dist"), help="输出目录")
-    ap.add_argument("--list", action="store_true", help="只列出包内容")
-    args = ap.parse_args()
+def read_entry_version(out_zip: Path, name: str) -> str:
+    """读包内入口 <名>/<名>.ahk 的 @version。
 
-    name = args.name
+    发版侧用它校验「包是从当前源码打的」：包内 @version 必须与目标版本一致，
+    否则说明打的是残留旧包，拒绝发布（2026-11-17 隐患的正解）。
+    """
+    with zipfile.ZipFile(out_zip) as z:
+        entry = f"{name}/{name}.ahk"
+        with z.open(entry) as f:
+            head = f.read(4096).decode("utf-8", "replace")
+    m = re.search(r"^;\s*@version\s+(\S+)", head, re.MULTILINE)
+    if not m:
+        raise SystemExit(f"包内入口没有 @version：{out_zip}")
+    return m.group(1)
+
+
+def has_attachments(src: Path, name: str) -> bool:
+    """脚本是否有附属文件（要进包、除入口 .ahk 外的文件）。
+
+    附件形态（zip 包 vs 单 .ahk）的**唯一判据**：有附属文件才用 zip。判据来自
+    脚本目录结构，**不**看 dist/ 里有没有残留的旧包——残留旧包会让「重发」把
+    上一版内容传上去（2026-11-17 实测隐患：dist/<名>.zip 决定形态且不校验
+    包内 @version，传了旧内容）。
+    """
+    files = collect(src, name)
+    return any(f.as_posix() != f"{name}.ahk" for f in files)
+
+
+def build(name: str, out_dir: str | Path | None = None) -> Path:
+    """从**当前源码**打发行包 zip（每次现打，覆盖任何残留旧包），返回 zip 路径。
+
+    包内容的唯一真源是 scripts/<名>/ 目录，杜绝「残留 dist/<名>.zip 传旧内容」。
+    调用方（publish_version.py / make_index.py）据此拿到一个始终与当前源码一致的包。
+    """
     src = REPO / "scripts" / name
     if not src.is_dir():
         raise SystemExit(f"错误：scripts\\{name}\\ 不存在")
-
     files = collect(src, name)
-    if args.list:
-        print(f"{name} 将打进包的内容（相对 zip 根 {name}/）：")
-        for f in files:
-            print("  ", f.as_posix())
-        return 0
-
-    out_dir = Path(args.out)
+    out_dir = Path(out_dir) if out_dir is not None else REPO / "dist"
     out_dir.mkdir(parents=True, exist_ok=True)
     out_zip = out_dir / f"{name}.zip"
 
@@ -154,6 +174,29 @@ def main() -> int:
     print(f"    压缩器：{tool}")
     print(f"    大小：{size / 1024:.1f} KB，{len(files)} 个文件")
     print("    入口：<名>/<名>.ahk 已通过包契约校验（root/@name/禁带 info、test）")
+    return out_zip
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("name", help="脚本名（scripts/<名>/ 目录）")
+    ap.add_argument("--out", default=str(REPO / "dist"), help="输出目录")
+    ap.add_argument("--list", action="store_true", help="只列出包内容")
+    args = ap.parse_args()
+
+    name = args.name
+    src = REPO / "scripts" / name
+    if not src.is_dir():
+        raise SystemExit(f"错误：scripts\\{name}\\ 不存在")
+
+    files = collect(src, name)
+    if args.list:
+        print(f"{name} 将打进包的内容（相对 zip 根 {name}/）：")
+        for f in files:
+            print("  ", f.as_posix())
+        return 0
+
+    build(name, args.out)
     return 0
 
 

@@ -25,6 +25,9 @@ import re
 import sys
 from urllib.parse import quote
 
+# 同目录工具模块：附件形态判据与「从当前源码现打包」能力（与 publish_version 同一真源）
+from pack_script import build, has_attachments, read_entry_version
+
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = ROOT / "scripts"
 HISTORY_DIR = ROOT / "history"
@@ -105,12 +108,22 @@ def build_entry(ahk: pathlib.Path, fields: dict, base: pathlib.Path) -> dict:
     gh_owner = GITHUB_OWNER.get(owner, owner)
     ident, ver = fields["id"], fields["version"]
     tag = f"{ident}-{ver}"
-    # m221: the release asset is a zip when pack_script.py produced one,
+    # m221: the release asset is a zip when the script has attached files,
     # otherwise the single .ahk. scripts.json and history/<id>.json must name
     # the SAME asset - publish_version.py regenerates the catalog after each
     # release, and a hard-coded .ahk name would make every zip script a 404.
-    asset = base / "dist" / (ahk.parent.name + ".zip")
-    if not asset.is_file():
+    # 附件形态唯一判据 = 脚本结构（has_attachments），不看 dist/ 里有没有残留旧包：
+    # 有附属文件 → 从当前源码现打 zip 并校验包内 @version；否则单 .ahk，残留同名
+    # 旧 zip 一律忽略（与 publish_version.py 同一真源，杜绝清单指向旧内容）。
+    name = ahk.parent.name
+    if has_attachments(ahk.parent, name):
+        asset = build(name, base / "dist")
+        pkg_ver = read_entry_version(asset, name)
+        if pkg_ver != fields["version"]:
+            raise HeaderError(
+                f"包内 @version {pkg_ver} 与脚本 @version {fields['version']} 不一致——"
+                f"{asset.name} 是残留旧包，拒绝生成清单")
+    else:
         asset = ahk
     # m221: BOTH mirrors publish the asset under the same ASCII name
     # <id>.ahk/.zip. GitHub's uploads endpoint mangles URL-encoded Chinese

@@ -29,6 +29,9 @@ import sys
 import urllib.parse
 from pathlib import Path
 
+# 同目录工具模块：附件形态判据与「从当前源码现打包」能力
+from pack_script import build, has_attachments, read_entry_version
+
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS = ROOT / "scripts"
 HISTORY_DIR = ROOT / "history"
@@ -303,9 +306,19 @@ def main() -> int:
     notes_path.parent.mkdir(exist_ok=True)
     notes_path.write_text(notes, encoding="utf-8", newline="\n")
 
-    # 附件：优先 zip（有附属文件时由 pack_script.py 预生成），否则单 .ahk
-    zip_path = ROOT / "dist" / (args.script + ".zip")
-    asset = zip_path if zip_path.is_file() else ahk
+    # 附件形态：唯一判据 = 脚本结构有没有附属文件（has_attachments），不看
+    # dist/ 里有没有残留旧包。有附属文件 → 从当前源码现打 zip（build 覆盖残留），
+    # 并校验包内入口 @version 与目标版本一致，不一致直接拒绝发布；无附属文件 →
+    # 单 .ahk，dist/ 里残留的同名旧 zip 一律忽略（绝不把旧内容传上去）。
+    if has_attachments(folder, args.script):
+        asset = build(args.script, ROOT / "dist")
+        pkg_ver = read_entry_version(asset, args.script)
+        if pkg_ver != ver:
+            raise SystemExit(
+                f"包内 @version {pkg_ver} 与目标版本 {ver} 不一致——"
+                f"{asset.name} 是残留旧包，拒绝发布（请检查 scripts/{args.script}/ 源码）")
+    else:
+        asset = ahk
     print(f"脚本={args.script} id={ident} 版本={ver} tag={tag}")
     print(f"附件={asset.relative_to(ROOT)}  分支={branch}  模式={'APPLY' if args.Apply else 'dry-run'}")
     print(f"发布说明（{len(notes)} 字符，脱敏）：\n{notes[:200]}...\n")
