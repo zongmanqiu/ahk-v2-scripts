@@ -2,7 +2,7 @@
 ; @name         右键菜单整理
 ; @id           context-menu-tidy
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.2.0
+; @version      1.2.1
 ; @description  拖入文件/文件夹读出它的右键菜单，或看桌面空白/文件夹空白的菜单，逐项隐藏或调整位置，只写 HKCU 可恢复
 ; @author       邱宗满
 ; @date         2026-11-17
@@ -66,13 +66,14 @@ BLOCK_PATH         := "Software\Microsoft\Windows\CurrentVersion\Shell Extension
 ; 客户区 820×450；左侧三入口 + 拖入区，右侧四列。
 WIN_W := 820, WIN_H := 450
 NAV_X := 16, NAV_W := 140, NAV_ITEM_H := 28, NAV_GAP := 4
-LIST_X := 172, LIST_Y := 16, LIST_W := 632, HEAD_H := 28, LIST_H := 330
+LIST_X := 172, LIST_Y := 16, LIST_W := 632, HEAD_H := 28, LIST_H := 334
 ; 四列宽之和 = 318+60+86+150 = 614 ≤ 自绘滚动条占位后的列表内宽（630-10=620），
 ; 否则列宽溢出又会冒出原生横条（K30）。末列吃下余量。
 COL_NAME_W := 318, COL_SRC_W := 60, COL_STATE_W := 86, COL_POS_W := 150
-BTN_Y := 388, BTN_H := 30
-STATUS_Y := 418, STATUS_H := 30
-DROP_Y := 128, DROP_H := 116, DROP_LABEL_Y := 252
+; 垂直节奏（§10）：列表底 378 → BLOCK_GAP 6 → 按钮 384..414 → BLOCK_GAP 6 → 状态条 420..450 贴底。
+BTN_Y := 384, BTN_H := 30
+STATUS_Y := 420, STATUS_H := 30
+DROP_Y := 128, DROP_H := 116
 
 ; 三种场景（交互形态）。位置根由 SceneRoots() 按对象类型展开。
 SceneDefs() => [
@@ -82,8 +83,9 @@ SceneDefs() => [
 ]
 
 ; 系统共享 CLSID：零提权也不能 Block，会连带系统菜单功能。
+; （显示名不走这张表——显示一律先查 FriendlyClsids。）
 SharedClsids() => Map(
-    "{f81e9010-6ea4-11ce-a7ff-00aa003ca9f6}", "共享",
+    "{f81e9010-6ea4-11ce-a7ff-00aa003ca9f6}", "授予访问权限",
     "{7AD84985-87B4-4a16-BE58-8B72A5B390F7}", "投射到设备",
     "{596AB062-B4D2-4215-9F74-E9109B0A8153}", "还原以前的版本",
     "{BFE0E2A4-C70C-4AD7-AC3D-10D1ECEBB5B4}", "照片编辑",
@@ -91,6 +93,47 @@ SharedClsids() => Map(
     "{3dad6c5d-2167-4cae-9914-f99e41c12cfa}", "包含到库中",
     "{00021401-0000-0000-c000-000000000046}", "快捷方式打开"
 )
+
+; COM 扩展友好名：CLSID 键默认值全是英文泛名（"Microsoft SendTo Service"），
+; 用户在真实菜单里看到的是这些中文名（注册表探针逐一核对，见 HISTORY 1.2.1）。
+FriendlyClsids() => Map(
+    "{7BA4C740-9E81-11CF-99D3-00AA004AE837}", "发送到",
+    "{f3d06e7c-1e45-4a26-847e-f9fcdee59be0}", "复制文件地址",
+    "{f81e9010-6ea4-11ce-a7ff-00aa003ca9f6}", "授予访问权限",
+    "{596AB062-B4D2-4215-9F74-E9109B0A8153}", "还原以前的版本",
+    "{3dad6c5d-2167-4cae-9914-f99e41c12cfa}", "包含到库中",
+    "{470C0EBD-5D73-4d58-9CED-E91E22E23282}", "固定到“开始”屏幕",
+    "{a2a9545d-a0c2-42b4-9708-a0b2badd77c8}", "固定到“开始”屏幕",
+    "{90AA3A4E-1CBA-4233-B8BB-535773D48449}", "固定到任务栏",
+    "{D969A300-E7FF-11d0-A93B-00A0C90F2719}", "新建",
+    "{09799AFB-AD67-11d1-ABCD-00C04FC30936}", "打开方式",
+    "{A470F8CF-A1E8-4f65-8335-227475AA5C46}", "加密",
+    "{E61BF828-5E63-4287-BEF1-60B1A4FDE0E3}", "工作文件夹",
+    "{BFE0E2A4-C70C-4AD7-AC3D-10D1ECEBB5B4}", "使用照片编辑",
+    "{7AD84985-87B4-4a16-BE58-8B72A5B390F7}", "投射到设备",
+    "{E2BF9676-5F8F-435C-97EB-11607A5BEDF7}", "共享",
+    "{3D1975AF-48C6-4f8e-A182-BE0E08FA86A9}", "NVIDIA 控制面板"
+)
+
+; 静态 verb 的 shell 内建名：键值全空的 verb（open 等）真实菜单显示这些词，
+; 注册表里查不到，只能内建映射兜底。
+BuiltinVerbNames() => Map(
+    "open", "打开",
+    "edit", "编辑",
+    "rename", "重命名",
+    "delete", "删除",
+    "cut", "剪切",
+    "copy", "复制",
+    "paste", "粘贴",
+    "properties", "属性",
+    "runas", "以管理员身份运行",
+    "print", "打印",
+    "find", "查找"
+)
+BuiltinFallback(verb) {
+    m := BuiltinVerbNames()
+    return m.Has(verb) ? m[verb] : verb
+}
 
 ; ── 纯函数（--selftest 可测，不碰注册表）─────────────────────────────────
 HiddenByMarks(vals) {
@@ -105,11 +148,13 @@ HiddenByMarks(vals) {
 }
 
 NormalizePos(v) {
-    s := Trim(v)
+    s := StrLower(Trim(v))
     if (s = "")
         return "default"
-    return (s == "top" || s == "bottom") ? s : "default"
+    return (s = "top" || s = "bottom") ? s : "default"
 }
+
+; Shell 对 Position 不区分大小写（注册表实测存 "Bottom"），归一必须同样不敏感。
 
 IsIndirectString(s) => (s != "" && SubStr(s, 1, 1) = "@")
 IsProtectedVerb(v) => (v = "open" || v = "edit")
@@ -243,7 +288,7 @@ VerbLabel(root, path, verb) {
     if (raw = MISSING || raw = "")
         raw := RegGet(root, base, "", verb)
     if (raw = MISSING || raw = "")
-        return verb
+        return BuiltinFallback(verb)
     if IsIndirectString(raw) {
         out := Buffer(1024, 0)
         if DllCall("shlwapi\SHLoadIndirectString", "Str", raw, "Ptr", out,
@@ -252,7 +297,7 @@ VerbLabel(root, path, verb) {
             if (s != "")
                 return s
         }
-        return verb
+        return BuiltinFallback(verb)
     }
     return raw
 }
@@ -264,8 +309,9 @@ ComItem(root, base, name) {
     if (dv != MISSING && SubStr(dv, 1, 1) = "{")
         guid := dv
     clsidDefault := RegGet(HKEY_CLASSES_ROOT, "CLSID\" guid, "", "")
-    ; 系统共享 CLSID 用友好名（它们常是 GUID 注册名 + 泛显示名）
-    label := IsSharedClsid(guid) ? SharedClsids()[guid] : ComLabel(name, clsidDefault)
+    ; 显示优先级：友好名映射 > 系统共享名 > 泛名/注册名。
+    label := FriendlyClsids().Has(guid) ? FriendlyClsids()[guid]
+           : IsSharedClsid(guid) ? SharedClsids()[guid] : ComLabel(name, clsidDefault)
     return { name: name, guid: guid, label: label }
 }
 
@@ -283,7 +329,7 @@ NotifyAssocChanged() =>
 ; ── 全局状态 ────────────────────────────────────────────────────────────
 global gGui := 0, gList := 0, gStatus := 0, gNavBtns := []
 global gItems := [], gScene := 1, gScroll := 0
-global gDropPath := "", gDropLabel := 0
+global gDropPath := ""
 
 ; ── 数据层 ──────────────────────────────────────────────────────────────
 ; 合并多个来源：同一 verb / CLSID 只出一行，roots 记下全部来源，隐藏时逐根写。
@@ -322,7 +368,21 @@ MakeItems(scene) {
                        , src: "COM", roots: [root], shared: IsSharedClsid(guid) })
         }
     }
-    return items
+    ; shell 真实顺序：置顶在最前、置底在最后、其余按注册枚举序（分桶拼接即稳定）。
+    top := [], mid := [], bot := []
+    for it in items {
+        if (it.pos = "top")
+            top.Push(it)
+        else if (it.pos = "bottom")
+            bot.Push(it)
+        else
+            mid.Push(it)
+    }
+    out := []
+    for bucket in [top, mid, bot]
+        for it in bucket
+            out.Push(it)
+    return out
 }
 
 RefreshItems() {
@@ -742,20 +802,18 @@ NavClick(i, *) {
 }
 
 OnDropFiles(guiObj, ctrlObj, files, x, y) {
-    global gScene, gNavBtns, gDropPath, gDropLabel, gStatus
+    global gScene, gNavBtns, gDropPath, gStatus
     if !files.Length
         return
     gDropPath := files[1]
     gScene := 1
     for j, b in gNavBtns
         b.Opt("Background" (j = 1 ? "EBF2FB" : "F7F9FC"))
-    SplitPath(gDropPath, &name)
-    gDropLabel.Value := "当前：" name (DirExist(gDropPath) ? "（文件夹）" : "（文件）")
     RefreshItems()
 }
 
 BuildGui() {
-    global gGui, gList, gStatus, gNavBtns, gDropLabel
+    global gGui, gList, gStatus, gNavBtns, gScroll
     gGui := Gui("", "右键菜单整理")
     gGui.BackColor := "F7F9FC"
     gGui.SetFont("s10", "Microsoft YaHei UI")
@@ -779,11 +837,9 @@ BuildGui() {
     gGui.Add("Text", "x" NAV_X " y" DROP_Y " w1 h" DROP_H " BackgroundB7C8E0 +0x200")
     gGui.Add("Text", "x" (NAV_X + NAV_W - 1) " y" DROP_Y " w1 h" DROP_H " BackgroundB7C8E0 +0x200")
     gGui.Add("Text", "x" (NAV_X + 6) " y" (DROP_Y + 38) " w" (NAV_W - 12) " h20"
-        " BackgroundFFFFFF c6E9BD4 +0x200 Center", "把文件或文件夹")
+        " BackgroundFFFFFF c202B3A +0x200 Center", "把文件或文件夹")
     gGui.Add("Text", "x" (NAV_X + 6) " y" (DROP_Y + 64) " w" (NAV_W - 12) " h20"
-        " BackgroundFFFFFF c6E9BD4 +0x200 Center", "拖到这里")
-    gDropLabel := gGui.Add("Text", "x" NAV_X " y" DROP_LABEL_Y " w" NAV_W " h50"
-        " BackgroundF7F9FC c202B3A +0x200", "当前：未拖入")
+        " BackgroundFFFFFF c202B3A +0x200 Center", "拖到这里")
 
     ; 列表区：白底块 + 四边线；装饰块 +0x100 让点击穿透（实测 K19）。
     gGui.Add("Text", "x" (LIST_X + 1) " y" (LIST_Y + 1) " w" (LIST_W - 2)
@@ -912,7 +968,12 @@ RunSelfTest(path) {
     m3 := Map("LegacyDisable", ""), m4 := Map("CommandFlags", 8), m5 := Map("CommandFlags", 7)
     Chk(HiddenByMarks(m1) && HiddenByMarks(m2) && HiddenByMarks(m3) && HiddenByMarks(m4), "四种隐藏标记都认", &out, &fails)
     Chk(!HiddenByMarks(m5) && !HiddenByMarks(Map()), "CommandFlags 低4位<8 算显示", &out, &fails)
-    Chk(NormalizePos("top") = "top" && NormalizePos("Top") = "default", "位置归一区分大小写", &out, &fails)
+    Chk(NormalizePos("top") = "top" && NormalizePos("Top") = "top" && NormalizePos("BOTTOM") = "bottom"
+        && NormalizePos("Left") = "default", "位置归一不区分大小写", &out, &fails)
+    Chk(BuiltinFallback("open") = "打开" && BuiltinFallback("runas") = "以管理员身份运行"
+        && BuiltinFallback("zzz") = "zzz", "内建 verb 名兜底", &out, &fails)
+    Chk(FriendlyClsids()["{7BA4C740-9E81-11CF-99D3-00AA004AE837}"] = "发送到"
+        && FriendlyClsids()["{D969A300-E7FF-11d0-A93B-00A0C90F2719}"] = "新建", "COM 友好名映射", &out, &fails)
     Chk(IsIndirectString("@shell32.dll,-8506") && !IsIndirectString("在此处打开"), "间接串识别", &out, &fails)
     Chk(IsProtectedVerb("open") && IsProtectedVerb("edit") && !IsProtectedVerb("cmd"), "保护 open/edit 动词", &out, &fails)
     Chk(ShadowKey("*", "cmd") = "HKCU\Software\Classes\*\shell\cmd", "verb 影子键只落在 HKCU", &out, &fails)

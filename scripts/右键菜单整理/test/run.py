@@ -149,10 +149,18 @@ def test_geometry(m, sess):
     c = w["client"]
     assert c["w"] == 820 and c["h"] == 450, f"客户区错: {c}"
     texts = [x.get("text", "") for x in w["controls"]]
-    for name in ("拖入文件/文件夹", "桌面空白处", "文件夹空白处", "把文件或文件夹", "拖到这里", "当前：未拖入"):
+    for name in ("拖入文件/文件夹", "桌面空白处", "文件夹空白处", "把文件或文件夹", "拖到这里"):
         assert name in texts, f"缺入口/拖入区 {name}"
+    assert "当前：" not in "".join(texts), "1.2.1 已删『当前: xxx』标签，不应存在"
     for name in ("隐藏", "显示", "置顶", "置底", "恢复位置", "刷新"):
         assert name in texts, f"缺按钮 {name}"
+    # 垂直节奏：状态条贴底（y+h=450），按钮底与状态条之间留 BLOCK_GAP=6。
+    stat = [x for x in w["controls"] if x.get("client", {}).get("y") == 420
+            and x.get("client", {}).get("h") == 30]
+    assert stat, f"状态条应 y=420 h=30（贴底）: {[x['client'] for x in w['controls'] if x['client']['y'] >= 380]}"
+    btns = [x for x in w["controls"] if x.get("client", {}).get("y") == 384
+            and x.get("client", {}).get("h") == 30]
+    assert len(btns) == 6, f"6 个动作按钮应在 y=384（与状态条隔 6px）: {len(btns)}"
     for name in ("菜单项", "来源", "状态", "位置"):
         assert name in texts, f"缺表头 {name}"
     lv = [x for x in w["controls"] if x.get("class") == "SysListView32"]
@@ -168,7 +176,7 @@ def click_nav(m, sess, y, expect_text, fewer_than=None):
     lv = [x for x in ui["windows"][0]["controls"] if x.get("class") == "SysListView32"][0]
     rows = lv["items"]["rows"]
     st = [c.get("text", "") for c in ui["windows"][0]["controls"]
-          if c.get("client", {}).get("y") == 418 and c.get("text")]
+          if c.get("client", {}).get("y") == 420 and c.get("text")]
     assert st and st[0].startswith(expect_text), f"状态栏错: {st}"
     assert len(rows) >= 3, f"{expect_text} 应列出真实菜单项，实际 {len(rows)}"
     if fewer_than is not None:
