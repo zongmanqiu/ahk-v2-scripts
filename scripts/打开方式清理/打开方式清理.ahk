@@ -2,10 +2,10 @@
 ; @name         打开方式清理
 ; @id           open-with-cleaner
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.5.7
+; @version      1.6.0
 ; @description  扫描 Windows「打开方式」相关的 13 处注册表位置，列出并清理失效残留
 ; @author       邱宗满
-; @date         2026-11-16
+; @date         2026-11-17
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -18,7 +18,8 @@
 ; 不含原项目的关于页、打赏二维码、多语言与自动更新（自动更新会覆盖宿主目录，不能照搬）。
 ; 与原项目的差异：复制路径改为工具条按钮与双击行；新增「删除失效项」；
 ; 扫描结果按注册表位置去重（原项目把 HKCU 的扩展名重复计入两次）。
-; 恢复功能与原项目一样有损：备份只记程序路径，恢复一律写回 REG_SZ，不还原原始值类型与 MRUList 顺序。
+; 恢复比原项目完整：备份把删除目标逐键逐值导出（类型 + 原始字节），恢复按原类型写回；
+; HKCR 条目删除时两个镜像都动，备份也两个镜像都导。只有 1.5.x 写的旧备份仍按「一律 REG_SZ」还原。
 ; 无 GUI 分支：--report [路径] 只读扫描读数；--selftest [路径] 合成键自测（只动自建键，结束即清理）。
 ; 1.3.0 按 开发指南 §10 统一原生 UI：s9→s10、八色浅底黑字、按钮改 1px 描边色块、
 ; 状态条与标题栏同为 #DCE8F7，主窗口与历史窗口按 EDGE=16 / 行宽=客户区−32 重排；
@@ -730,12 +731,12 @@ SplitReg(full) {
     return [root, SubStr(full, p + 1)]
 }
 
-OpenReg(full) {
+OpenReg(full, access := 0x20019) {
     t := SplitReg(full)
     if !t[1]
         return 0
     h := 0
-    if DllCall("advapi32\RegOpenKeyExW", "Ptr", t[1], "WStr", t[2], "UInt", 0, "UInt", 0x20019, "Ptr*", &h) != 0
+    if DllCall("advapi32\RegOpenKeyExW", "Ptr", t[1], "WStr", t[2], "UInt", 0, "UInt", access, "Ptr*", &h) != 0
         return 0
     return h
 }
@@ -1543,7 +1544,10 @@ DeleteOne(row) {
     e := S.view[row]
     if (MsgBox("确定删除这一条？`n`n" e.full, "删除确认", "YesNo Icon!") != "Yes")
         return
-    Backup([e])
+    if !Backup([e]) {
+        MsgBox "备份失败，未删除任何条目。`n`n备份是删除前唯一的还原凭据，读不到就不动注册表。", "删除结果", "Iconx"
+        return
+    }
     ok := DeleteEntry(e)
     MsgBox ok ? "已删除 1 个条目。" : "删除失败，可能需要管理员权限。", "删除结果", ok ? "Iconi" : "Icon!"
     StartScan()
@@ -1588,7 +1592,10 @@ ConfirmAndDelete(targets) {
     msg := "确定删除 " n " 个条目？`n`n这将从右键菜单「打开方式」中移除。`n如果再次使用这些程序，Windows 可能重新创建。"
     if (MsgBox(msg, "删除确认", "YesNo Icon!") != "Yes")
         return
-    Backup(targets)
+    if !Backup(targets) {
+        MsgBox "备份失败，未删除任何条目。`n`n备份是删除前唯一的还原凭据，读不到就不动注册表。", "删除结果", "Iconx"
+        return
+    }
     ok := 0, fail := 0, gone := Map()
     for e in targets {
         if DeleteEntry(e) {
@@ -1694,18 +1701,168 @@ CleanupMru(key) {
     try RegWrite(neu, "REG_SZ", key, "MRUList")
 }
 
+; 备份：一行摘要（人读）+ 逐键逐值的明细行（还原用）。返回 false 表示没备全，
+; 调用方必须放弃删除——删了又还原不回来的备份等于没有备份。
+; 明细行带完整路径（Hive= + Sub=），因为 HKCR 条目删除时两个镜像都动，恢复也得两边都回填。
 Backup(targets, dir := "") {
     ; dir 为空走用户真实 history/（正常删除流程）；自测传入隔离目录，绝不碰用户的备份。
     d := dir != "" ? dir : HistDir()
-    try DirCreate(d)
-    txt := ""
+    lines := [], want := 0, got := 0
     for i, e in targets {
-        txt .= "[" i "] Hive=" HiveToken(e.hive) "`tKey=" e.key "`tValue=" e.val
-             . "`tType=" (e.sub ? "SubKey" : "Value") "`tProgram=" e.prog
-             . "`tExt=" e.ext "`tFullPath=" e.full "`n"
+        lines.Push("[" i "] Hive=" HiveToken(e.hive) "`tKey=" e.key "`tValue=" e.val
+            . "`tType=" (e.sub ? "SubKey" : "Value") "`tProgram=" e.prog
+            . "`tExt=" e.ext "`tFullPath=" e.full)
+        for t in BackupTargets(e) {
+            if e.sub {
+                k := t[2] "\" e.val
+                if !KeyExists(t[1] "\" k)
+                    continue
+                want++
+                got += DumpTree(t[1], k, lines)
+            } else {
+                if !ValueExists(t[1] "\" t[2], e.val)
+                    continue
+                want++
+                got += DumpValue(t[1], t[2], e.val, lines)
+            }
+        }
     }
-    try FileAppend(txt, d "\backup_" FormatTime(, "yyyyMMdd_HHmmss") ".txt", "UTF-8")
+    if (want = 0 || got < want)
+        return false
+    try {
+        DirCreate(d)
+        txt := ""
+        for ln in lines
+            txt .= ln "`n"
+        FileAppend(txt, UniqueBackup(d), "UTF-8")
+    } catch {
+        return false
+    }
+    return true
 }
+
+; 删除会动的注册表位置（与 DeleteEntry 同一套口径）。
+BackupTargets(e) {
+    return e.hive = "HKCR"
+        ? [["HKCU", "Software\Classes\" e.key], ["HKLM", "SOFTWARE\Classes\" e.key]]
+        : [[e.hive, e.key]]
+}
+
+; 备份文件名只到秒，同一秒连删两次会互相覆盖；撞名就加 -1/-2。
+UniqueBackup(d) {
+    base := d "\backup_" FormatTime(, "yyyyMMdd_HHmmss")
+    p := base ".txt", n := 1
+    while FileExist(p)
+        p := base "-" n++ ".txt"
+    return p
+}
+
+; 递归导出子键：每层一个 K 行，键下每个值一个 V 行。子键打不开就算失败——
+; 宁可整份备份判失败、拒绝删除，也不留「以为备过、其实缺一片」的备份。
+DumpTree(hive, sub, lines, depth := 0) {
+    full := hive "\" sub
+    if !KeyExists(full)
+        return 0
+    lines.Push("K`tHive=" HiveToken(hive) "`tSub=" sub)
+    for v in RegValues(full)
+        lines.Push("V`tHive=" HiveToken(hive) "`tSub=" sub "`tName=" v.name
+            . "`tKind=" v.kind "`tData=" EncData(v))
+    if (depth >= 32)
+        return 1
+    for k in SubKeys(full)
+        if !DumpTree(hive, sub "\" k, lines, depth + 1)
+            return 0
+    return 1
+}
+
+DumpValue(hive, sub, name, lines) {
+    for v in RegValues(hive "\" sub) {
+        if (StrLower(v.name) != StrLower(name))
+            continue
+        lines.Push("V`tHive=" HiveToken(hive) "`tSub=" sub "`tName=" v.name
+            . "`tKind=" v.kind "`tData=" EncData(v))
+        return 1
+    }
+    return 0
+}
+
+; 值数据落成文本：SZ / EXPAND_SZ 存转义文本（人能读），其余类型存十六进制。
+; 不走 RegRead——它把 MULTI_SZ 读成字符串、BINARY 读成 Buffer、QWORD 直接报错，
+; 备份要么逐字节无损，要么不叫备份。
+EncData(v) {
+    if ((v.kind = 1 || v.kind = 2) && Mod(v.size, 2) = 0) {
+        if (v.size = 0)
+            return ""
+        return EscTxt(StrGet(v.buf, v.size // 2, "UTF-16"))
+    }
+    return HexOf(v.buf, v.size)
+}
+
+; 枚举一个键下的全部值：名、类型码、原始字节。两趟 RegEnumValueW 只为先拿长度。
+RegValues(full) {
+    out := []
+    h := OpenReg(full)
+    if !h
+        return out
+    i := 0
+    loop {
+        nb := Buffer(2048, 0), ns := 1024, ty := 0, ds := 0
+        r := DllCall("advapi32\RegEnumValueW", "Ptr", h, "UInt", i, "Ptr", nb, "UInt*", &ns
+            , "Ptr", 0, "UInt*", &ty, "Ptr", 0, "UInt*", &ds, "Ptr", 0, "Int")
+        if (r != 0)
+            break
+        db := Buffer(Max(ds, 1), 0), ns := 1024
+        r := DllCall("advapi32\RegEnumValueW", "Ptr", h, "UInt", i, "Ptr", nb, "UInt*", &ns
+            , "Ptr", 0, "UInt*", &ty, "Ptr", db, "UInt*", &ds, "Ptr", 0, "Int")
+        if (r != 0)
+            break
+        out.Push({name: StrGet(nb, "UTF-16"), kind: ty, buf: db, size: ds})
+        i++
+    }
+    DllCall("advapi32\RegCloseKey", "Ptr", h)
+    return out
+}
+
+EscTxt(s) {
+    s := StrReplace(s, "\", "\\")
+    s := StrReplace(s, "`t", "\t")
+    s := StrReplace(s, "`r", "\r")
+    return StrReplace(s, "`n", "\n")
+}
+
+UnescTxt(s) {
+    out := "", i := 1, n := StrLen(s)
+    while (i <= n) {
+        c := SubStr(s, i, 1)
+        if (c = "\" && i < n) {
+            d := SubStr(s, i + 1, 1)
+            out .= d = "t" ? "`t" : d = "r" ? "`r" : d = "n" ? "`n" : d
+            i += 2
+        } else {
+            out .= c
+            i++
+        }
+    }
+    return out
+}
+
+HexOf(buf, size) {
+    if (size <= 0)
+        return ""
+    h := ""
+    loop size
+        h .= Format("{:02X}", NumGet(buf, A_Index - 1, "UChar"))
+    return h
+}
+
+HexBuf(h) {
+    n := StrLen(h) // 2
+    b := Buffer(Max(n, 1), 0)
+    loop n
+        NumPut("UChar", Integer("0x" SubStr(h, A_Index * 2 - 1, 2)), b, A_Index - 1)
+    return b
+}
+
 
 Elevate() {
     exe := A_AhkPath
@@ -1751,8 +1908,9 @@ ShowHistory() {
         t := FormatTime(FileGetTime(f, "C"), "yyyy-MM-dd HH:mm:ss")
         n := 0
         try {
+            ; 只数 "[" 开头的摘要行：1.6.0 起备份文件后面还跟着 K/V 明细行，不能按非空行算条目数。
             for ln in StrSplit(FileRead(f, "UTF-8"), "`n", "`r")
-                if (Trim(ln) != "")
+                if (SubStr(Trim(ln), 1, 1) = "[")
                     n++
         }
         S.histList.Add([t " · " n " 条"])
@@ -1820,63 +1978,145 @@ RestoreHistory() {
     msg := "确定恢复所选备份？`n`n将尝试把备份中的所有条目重新写入注册表。`n注意：如果原始程序已卸载，恢复的条目可能无效。"
     if (MsgBox(msg, "恢复", "YesNo Icon!") != "Yes")
         return
-    ok := 0, fail := 0
-    try {
-        for line in StrSplit(FileRead(f, "UTF-8"), "`n", "`r") {
-            if (Trim(line) = "")
-                continue
-            if RestoreLine(line)
-                ok++
-            else
-                fail++
-        }
-    } catch as err {
-        MsgBox "恢复失败：" err.Message, "删除历史与恢复", "Iconx"
+    if !FileExist(f) {
+        MsgBox "备份文件已不在：" f, "删除历史与恢复", "Iconx"
         return
     }
-    MsgBox "已恢复 " ok " 个条目。" (fail ? "`n" fail " 个失败。" : ""), "删除历史与恢复", fail ? "Icon!" : "Iconi"
-    S.histDirty := ok > 0
+    r := RestoreFile(f)
+    MsgBox "已恢复 " r.ok " 个条目。" (r.fail ? "`n" r.fail " 个失败（多为需要管理员权限的 HKLM 条目）。" : ""), "删除历史与恢复", r.fail ? "Icon!" : "Iconi"
+    S.histDirty := r.ok > 0
     CloseHistory()
 }
 
-RestoreLine(line) {
-    if (SubStr(line, 1, 1) = "[") {
-        p := InStr(line, "]")
-        if (p > 0)
-            line := LTrim(SubStr(line, p + 1))
+; 还原一份备份：有明细行（K/V）就逐行按原类型写回；没有明细行的是 1.5.x 的老备份，
+; 沿用旧口径（只写回一条 REG_SZ）——老备份仍然能恢复，只是恢复不了类型与子键树。
+RestoreFile(f) {
+    txt := ""
+    try txt := FileRead(f, "UTF-8")
+    catch
+        return {ok: 0, fail: 1}
+    blocks := [], cur := 0
+    for raw in StrSplit(txt, "`n", "`r") {
+        ln := RTrim(raw, "`r")
+        if (ln = "")
+            continue
+        if (SubStr(ln, 1, 1) = "[") {
+            cur := NewBlock(ln)
+            if IsObject(cur)
+                blocks.Push(cur)
+            continue
+        }
+        if IsObject(cur)
+            cur.lines.Push(ln)
     }
-    parts := StrSplit(line, "`t")
-    if (parts.Length < 3)
-        return false
-    hive := "", key := "", val := "", type := "Value", prog := ""
-    for p in parts {
-        if (SubStr(p, 1, 5) = "Hive=")
-            hive := SubStr(p, 6)
-        else if (SubStr(p, 1, 4) = "Key=")
-            key := SubStr(p, 5)
-        else if (SubStr(p, 1, 6) = "Value=")
-            val := SubStr(p, 7)
-        else if (SubStr(p, 1, 5) = "Type=")
-            type := SubStr(p, 6)
-        else if (SubStr(p, 1, 8) = "Program=")
-            prog := SubStr(p, 9)
+    ok := 0, fail := 0
+    for b in blocks {
+        if RestoreBlock(b)
+            ok++
+        else
+            fail++
     }
-    if (key = "" || val = "")
-        return false
-    root := hive = "CurrentUser" ? "HKCU" : hive = "LocalMachine" ? "HKLM" : hive = "ClassesRoot" ? "HKCR" : ""
-    if (root = "")
+    return {ok: ok, fail: fail}
+}
+
+NewBlock(ln) {
+    p := InStr(ln, "]")
+    if (p > 0)
+        ln := SubStr(ln, p + 1)
+    b := {hive: FieldOf(ln, "Hive"), key: FieldOf(ln, "Key"), val: FieldOf(ln, "Value")
+        , type: FieldOf(ln, "Type", "Value"), prog: FieldOf(ln, "Program"), lines: []}
+    return (b.key = "" || b.val = "") ? 0 : b
+}
+
+FieldOf(ln, key, def := "") {
+    pre := key "=", n := StrLen(pre)
+    for p in StrSplit(ln, "`t") {
+        ; 摘要行是 "[1] Hive=…"：去掉序号后第一个字段带前导空格，先左裁再比对。
+        p := LTrim(p)
+        if (SubStr(p, 1, n) = pre)
+            return SubStr(p, n + 1)
+    }
+    return def
+}
+
+RestoreBlock(b) {
+    if b.lines.Length {
+        n := 0
+        for ln in b.lines
+            if RestoreItem(ln)
+                n++
+        return n = b.lines.Length
+    }
+    root := HiveRoot(b.hive)
+    if (root = "" || b.key = "")
         return false
     try {
-        if (type = "SubKey") {
-            if (prog != "")
-                RegWrite(prog, "REG_SZ", root "\" key "\" val)
+        if (b.type = "SubKey") {
+            if (b.prog != "")
+                RegWrite(b.prog, "REG_SZ", root "\" b.key "\" b.val)
             else
-                RegCreateKey(root "\" key "\" val)
+                CreateKey(root "\" b.key "\" b.val)
         } else
-            RegWrite(prog, "REG_SZ", root "\" key, val)
+            RegWrite(b.prog, "REG_SZ", root "\" b.key, b.val)
         return true
     }
     return false
+}
+
+RestoreItem(ln) {
+    c := SubStr(ln, 1, 1)
+    root := HiveRoot(FieldOf(ln, "Hive"))
+    sub := FieldOf(ln, "Sub")
+    if (root = "" || sub = "")
+        return false
+    if (c = "K")
+        return CreateKey(root "\" sub)
+    if (c != "V")
+        return false
+    return SetValue(root "\" sub, FieldOf(ln, "Name"), Integer(FieldOf(ln, "Kind", "1"))
+        , FieldOf(ln, "Data", ""))
+}
+
+HiveRoot(tok) {
+    return tok = "CurrentUser" ? "HKCU"
+         : tok = "LocalMachine" ? "HKLM"
+         : tok = "ClassesRoot" ? "HKCR" : ""
+}
+
+CreateKey(full) {
+    t := SplitReg(full)
+    if !t[1]
+        return false
+    h := 0
+    ; RegCreateKeyExW 会把缺的中间键一起建出来；AHK 的 RegCreateKey 只建叶子。
+    if DllCall("advapi32\RegCreateKeyExW", "Ptr", t[1], "WStr", t[2], "UInt", 0, "Ptr", 0
+        , "UInt", 0, "UInt", 0x20006, "Ptr", 0, "Ptr*", &h, "Ptr", 0, "Int") != 0
+        return false
+    DllCall("advapi32\RegCloseKey", "Ptr", h)
+    return true
+}
+
+; 按类型码原样写回字节：REG_SZ/REG_EXPAND_SZ 走文本（补回结尾 NUL），其余走十六进制。
+SetValue(full, name, kind, data) {
+    if !CreateKey(full)
+        return false
+    h := OpenReg(full, 0x20006)
+    if !h
+        return false
+    if (kind = 1 || kind = 2) {
+        s := UnescTxt(data)
+        n := s = "" ? 0 : StrPut(s, "UTF-16") * 2
+        buf := Buffer(Max(n, 1), 0)
+        if n
+            StrPut(s, buf, n // 2, "UTF-16")
+    } else {
+        n := StrLen(data) // 2
+        buf := HexBuf(data)
+    }
+    r := DllCall("advapi32\RegSetValueExW", "Ptr", h, "WStr", name, "UInt", 0, "UInt", kind
+        , "Ptr", buf, "UInt", n, "Int")
+    DllCall("advapi32\RegCloseKey", "Ptr", h)
+    return r = 0
 }
 
 ; ── 合成键自测：--selftest [输出路径]（只动自建键，结束即清理） ───────
@@ -1896,6 +2136,9 @@ RunSelfTest(path) {
     RegWrite("ab", "REG_SZ", hk "\OpenWithList", "MRUList")
     RegWrite("selftest-prog", "REG_SZ", hk "\SomeProgId")
     RegWrite("deep", "REG_SZ", hk "\SomeProgId\Deep")
+    ; 非字符串类型与嵌套键各来一份：这三项正是「备份只记程序路径」时会被吃掉的东西。
+    RegWrite(7, "REG_DWORD", hk "\SomeProgId", "num")
+    RegWrite("nv", "REG_SZ", hk "\SomeProgId\Deep2", "sv")
     e1 := {hive: "HKCU", key: base "\OpenWithList", val: "a", sub: false, prog: "notepad.exe", ext: ".txt", full: ""}
     e2 := {hive: "HKCU", key: base, val: "SomeProgId", sub: true, prog: "selftest-prog", ext: "*", full: ""}
     e3 := {hive: "HKCR", key: "AHKDeckOwcSelfTest\OpenWithList", val: "b", sub: false, prog: "mspaint.exe", ext: ".txt", full: ""}
@@ -1904,36 +2147,63 @@ RunSelfTest(path) {
     ; 原实现按 mtime 在真实 history/ 里取"最新"backup 再删，同一秒内有用户备份就会误删。
     testBakDir := SubStr(path, 1, InStr(path, "\", false, -1) - 1) "\selftest-backup"
     try DirCreate(testBakDir)
-    Backup([e1, e2, e3], testBakDir)
+    bakOk := Backup([e1, e2, e3], testBakDir)
     bf := "", bt := 0
     Loop Files testBakDir "\backup_*.txt" {
         if (A_LoopFileTimeModified > bt)
             bt := A_LoopFileTimeModified, bf := A_LoopFileFullPath
     }
-    Emit((bf != "" ? "PASS " : "FAIL ") "备份文件已生成")
+    Emit((bakOk && bf != "" ? "PASS " : "FAIL ") "备份成功并返回 true")
     lines := bf != "" ? StrSplit(FileRead(bf, "UTF-8"), "`n", "`r") : []
+    nV := 0, nK := 0
+    for ln in lines {
+        if (SubStr(ln, 1, 2) = "V`t")
+            nV++
+        else if (SubStr(ln, 1, 2) = "K`t")
+            nK++
+    }
+    ; SomeProgId 子树：3 个键（自身 / Deep / Deep2）、4 个值（默认 / num / deep / sv）；
+    ; 加上值条目 a、b 各一条 → 6 个 V 行。子键条目若按老办法只记 Program，这里只会有 0 行。
+    Emit((nV = 6 && nK = 3 ? "PASS " : "FAIL ") "子键条目导出整棵子树（K=" nK " V=" nV "）")
 
     Emit((DeleteEntry(e1) ? "PASS " : "FAIL ") "删除 HKCU 值 a")
     Emit((!ValueExists(hk "\OpenWithList", "a") ? "PASS " : "FAIL ") "值 a 已消失")
     Emit((ReadStr(hk "\OpenWithList", "MRUList") = "b" ? "PASS " : "FAIL ") "MRUList 收缩为 b")
     Emit((DeleteEntry(e3) ? "PASS " : "FAIL ") "HKCR 映射删除值 b")
     Emit((!ValueExists(hk "\OpenWithList", "b") ? "PASS " : "FAIL ") "值 b 已消失")
-    Emit((ReadStr(hk "\OpenWithList", "MRUList") = "" ? "PASS " : "FAIL ") "MRUList 清空")
+    ; 「读到空串」区分不了「值被清空」和「值根本不存在」——必须同时要求值仍在。
+    Emit((ValueExists(hk "\OpenWithList", "MRUList") && ReadStr(hk "\OpenWithList", "MRUList") = ""
+        ? "PASS " : "FAIL ") "MRUList 清空且保留")
     Emit((DeleteEntry(e2) ? "PASS " : "FAIL ") "删除子键 SomeProgId")
     Emit((!KeyExists(hk "\SomeProgId\Deep") ? "PASS " : "FAIL ") "子键树递归删除")
 
-    n := 0
-    for ln in lines
-        if (ln != "")
-            n++
-    ok := n = 3
-    for ln in lines
-        if (ln != "" && !RestoreLine(ln))
-            ok := false
-    Emit((ok ? "PASS " : "FAIL ") "三条备份行全部恢复")
+    r := bf != "" ? RestoreFile(bf) : {ok: 0, fail: 0}
+    Emit((r.ok = 3 && r.fail = 0 ? "PASS " : "FAIL ") "三条备份全部恢复（ok=" r.ok " fail=" r.fail "）")
     Emit((ReadStr(hk "\OpenWithList", "a") = "notepad.exe" ? "PASS " : "FAIL ") "恢复值 a 数据")
     Emit((ReadStr(hk "\OpenWithList", "b") = "mspaint.exe" ? "PASS " : "FAIL ") "恢复值 b 数据（经 HKCR）")
     Emit((ReadStr(hk "\SomeProgId") = "selftest-prog" ? "PASS " : "FAIL ") "恢复子键默认值")
+    Emit((ReadStr(hk "\SomeProgId\Deep") = "deep" ? "PASS " : "FAIL ") "恢复子键树里的值")
+    Emit((ReadStr(hk "\SomeProgId\Deep2", "sv") = "nv" ? "PASS " : "FAIL ") "恢复第二层嵌套键的值")
+    Emit((RegRead(hk "\SomeProgId", "num", -1) = 7 ? "PASS " : "FAIL ") "恢复 REG_DWORD 类型与数据")
+
+    ; 备份失败的判据：目标读不到时 Backup 必须返回 false，界面据此放弃删除，不假装备过。
+    ghost := {hive: "HKCU", key: base "\NoSuchKey", val: "x", sub: true, prog: "", ext: "", full: ""}
+    Emit((!Backup([ghost], testBakDir) ? "PASS " : "FAIL ") "读不到目标时备份返回 false")
+    ; 写盘失败也算没备全：路径非法（文件名带 *）时 DirCreate/FileAppend 都会抛错。
+    Emit((!Backup([e1], testBakDir "\bad*name") ? "PASS " : "FAIL ") "备份写盘失败返回 false")
+
+    ; 同一秒连删两次不能互相覆盖：文件名撞了就加 -1/-2。
+    RegWrite("z", "REG_SZ", hk "\OpenWithList", "z")
+    ez := {hive: "HKCU", key: base "\OpenWithList", val: "z", sub: false, prog: "z", ext: ".z", full: ""}
+    n0 := 0
+    Loop Files testBakDir "\backup_*.txt"
+        n0++
+    Backup([ez], testBakDir)
+    Backup([ez], testBakDir)
+    n1 := 0
+    Loop Files testBakDir "\backup_*.txt"
+        n1++
+    Emit((n1 - n0 = 2 ? "PASS " : "FAIL ") "同一秒两次备份各成一份（新增 " (n1 - n0) " 份）")
 
     ; DropRows 原地摘行（隐藏列表，不碰注册表）
     S.all := [], S.view := [], S.seen := Map()

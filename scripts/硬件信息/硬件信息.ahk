@@ -2,10 +2,10 @@
 ; @name         硬件信息
 ; @id           hardware-info
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      2.3.3
+; @version      2.3.4
 ; @description  左侧导航分页查看 CPU/主板/内存/显卡/磁盘/网卡/显示器/系统，逐项列出详细规格
 ; @author       邱宗满
-; @date         2026-11-16
+; @date         2026-11-17
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -199,6 +199,13 @@ Dash(v, def := "未提供") {
     return s = "" ? def : s
 }
 
+JoinNames(arr) {
+    s := ""
+    for v in arr
+        s .= (s = "" ? "" : " / ") v
+    return s
+}
+
 ; WmiMonitorID 的字段是 byte 数组（ASCII 码点、尾部补零），转字符串。
 WmiBytes(v) {
     if !IsObject(v)
@@ -219,12 +226,14 @@ WmiBytes(v) {
     return s
 }
 
+; 只有「读不到」才算缺失。0 是合法取值——WmiMonitorConnectionParams 的
+; VideoOutputTechnology=0 就是 VGA（模拟），把它当缺失会显示成「—」。
 Prop(obj, name, def := "") {
     try {
         v := obj.%name%
     } catch
         return def
-    if (v = "" || v = 0)
+    if (v = "")
         return def
     return v
 }
@@ -313,15 +322,17 @@ FeatureList() {
 }
 
 Collect() {
+    global gWmi, gWarn
     d := Map("cpu", Map(), "cpus", [], "board", Map(), "bios", Map(), "cs", Map(), "os", Map(),
              "array", Map(), "sticks", [], "gpus", [], "disks", [], "volumes", [],
              "nets", [], "monitors", [], "sounds", [], "chassis", 0, "tz", "",
-             "error", "")
+             "error", "", "warn", [])
+    gWarn := []
     try {
-        wmi := ComObjGet("winmgmts:\\.\root\cimv2")
+        gWmi := ComObjGet("winmgmts:\\.\root\cimv2")
 
         ; 双路主板会有两条（每插槽一条）：全收，别 break 只留第一颗。
-        for o in wmi.ExecQuery("SELECT * FROM Win32_Processor") {
+        for o in WmiQ("SELECT * FROM Win32_Processor") {
             d["cpus"].Push(Map(
                 "name", Trim(Prop(o, "Name")),
                 "mfr", Trim(Prop(o, "Manufacturer")),
@@ -343,7 +354,7 @@ Collect() {
         }
         if (d["cpus"].Length)
             d["cpu"] := d["cpus"][1]
-        for o in wmi.ExecQuery("SELECT * FROM Win32_BaseBoard") {
+        for o in WmiQ("SELECT * FROM Win32_BaseBoard") {
             d["board"] := Map(
                 "mfr", Trim(Prop(o, "Manufacturer")),
                 "product", Trim(Prop(o, "Product")),
@@ -351,7 +362,7 @@ Collect() {
                 "serial", Trim(Prop(o, "SerialNumber")))
             break
         }
-        for o in wmi.ExecQuery("SELECT * FROM Win32_BIOS") {
+        for o in WmiQ("SELECT * FROM Win32_BIOS") {
             d["bios"] := Map(
                 "mfr", Trim(Prop(o, "Manufacturer")),
                 "ver", Trim(Prop(o, "SMBIOSBIOSVersion")),
@@ -360,7 +371,7 @@ Collect() {
                 "minor", NumOf(Prop(o, "SMBIOSMinorVersion", 0)))
             break
         }
-        for o in wmi.ExecQuery("SELECT * FROM Win32_ComputerSystem") {
+        for o in WmiQ("SELECT * FROM Win32_ComputerSystem") {
             d["cs"] := Map(
                 "mfr", Trim(Prop(o, "Manufacturer")),
                 "model", Trim(Prop(o, "Model")),
@@ -370,7 +381,7 @@ Collect() {
                 "user", Trim(Prop(o, "UserName")))
             break
         }
-        for o in wmi.ExecQuery("SELECT * FROM Win32_OperatingSystem") {
+        for o in WmiQ("SELECT * FROM Win32_OperatingSystem") {
             d["os"] := Map(
                 "caption", Trim(Prop(o, "Caption")),
                 "version", Trim(Prop(o, "Version")),
@@ -383,14 +394,14 @@ Collect() {
                 "serial", Trim(Prop(o, "SerialNumber")))
             break
         }
-        for a in wmi.ExecQuery("SELECT * FROM Win32_PhysicalMemoryArray") {
+        for a in WmiQ("SELECT * FROM Win32_PhysicalMemoryArray") {
             d["array"] := Map(
                 "maxKB", NumOf(Prop(a, "MaxCapacity", 0)),
                 "slots", NumOf(Prop(a, "MemoryDevices", 0)),
                 "ecc", NumOf(Prop(a, "MemoryErrorCorrection", 0)))
             break
         }
-        for o in wmi.ExecQuery("SELECT * FROM Win32_PhysicalMemory")
+        for o in WmiQ("SELECT * FROM Win32_PhysicalMemory")
             d["sticks"].Push(Map(
                 "locator", Prop(o, "DeviceLocator"),
                 "bank", Prop(o, "BankLabel"),
@@ -404,7 +415,7 @@ Collect() {
                 "type", NumOf(Prop(o, "SMBIOSMemoryType", 0)),
                 "form", NumOf(Prop(o, "FormFactor", 0)),
                 "width", NumOf(Prop(o, "DataWidth", 0))))
-        for o in wmi.ExecQuery("SELECT * FROM Win32_VideoController")
+        for o in WmiQ("SELECT * FROM Win32_VideoController")
             d["gpus"].Push(Map(
                 "name", Trim(Prop(o, "Name")),
                 "vendor", Trim(Prop(o, "AdapterCompatibility")),
@@ -428,7 +439,7 @@ Collect() {
                 g["vram"] := r["ram"]
             g["vbios"] := r["bios"], g["chip"] := r["chip"]
         }
-        for o in wmi.ExecQuery("SELECT * FROM Win32_DiskDrive")
+        for o in WmiQ("SELECT * FROM Win32_DiskDrive")
             d["disks"].Push(Map(
                 "model", Trim(Prop(o, "Model")),
                 "size", NumOf(Prop(o, "Size", 0)),
@@ -438,7 +449,7 @@ Collect() {
                 "serial", Trim(Prop(o, "SerialNumber")),
                 "firmware", Trim(Prop(o, "FirmwareRevision")),
                 "parts", NumOf(Prop(o, "Partitions", 0))))
-        for o in wmi.ExecQuery("SELECT * FROM Win32_LogicalDisk WHERE DriveType=3")
+        for o in WmiQ("SELECT * FROM Win32_LogicalDisk WHERE DriveType=3")
             d["volumes"].Push(Map(
                 "id", Trim(Prop(o, "DeviceID")),
                 "label", Trim(Prop(o, "VolumeName")),
@@ -449,7 +460,7 @@ Collect() {
         ; 筛 IP 是「网络配置」视角，没配 IP 的网卡会整个消失；IP/网关/DHCP 属于系统
         ; 配置而非硬件规格，本脚本不显示（那是 ipconfig 的活）。
         try {
-            for o in wmi.ExecQuery("SELECT * FROM Win32_NetworkAdapter WHERE PhysicalAdapter=True")
+            for o in WmiQ("SELECT * FROM Win32_NetworkAdapter WHERE PhysicalAdapter=True")
                 d["nets"].Push(Map(
                     "desc", Trim(Prop(o, "Name")),
                     "mac", Trim(Prop(o, "MACAddress")),
@@ -457,10 +468,10 @@ Collect() {
                     "status", NumOf(Prop(o, "NetConnectionStatus", 0)),
                     "type", Trim(Prop(o, "AdapterType"))))
         }
-        for o in wmi.ExecQuery("SELECT * FROM Win32_SoundDevice")
+        for o in WmiQ("SELECT * FROM Win32_SoundDevice")
             d["sounds"].Push(Map("name", Trim(Prop(o, "Name")), "mfr", Trim(Prop(o, "Manufacturer"))))
         try {
-            for o in wmi.ExecQuery("SELECT * FROM Win32_SystemEnclosure") {
+            for o in WmiQ("SELECT * FROM Win32_SystemEnclosure") {
                 ct := Prop(o, "ChassisTypes", 0)
                 if IsObject(ct) {
                     if (ct.MaxIndex() >= 0)
@@ -471,7 +482,7 @@ Collect() {
             }
         }
         try {
-            for o in wmi.ExecQuery("SELECT * FROM Win32_TimeZone") {
+            for o in WmiQ("SELECT * FROM Win32_TimeZone") {
                 d["tz"] := Trim(Prop(o, "Caption"))
                 break
             }
@@ -526,7 +537,20 @@ Collect() {
     } catch {
         ; 无 root\wmi 或类不存在时静默跳过，页面显示「未检测到」
     }
+    d["warn"] := gWarn
     return d
+}
+
+; 单个 WMI 类失败只丢这一类：早期一个 try 罩住 14 条查询，任一类报错或超时
+; （虚拟机上的 Win32_VideoController 最常见）就把已经采到的 CPU / 内存 / 显卡一起丢掉，
+; 整个界面变成「读取失败」。失败的类名记进 gWarn，在「系统」页如实列出。
+WmiQ(q) {
+    global gWmi, gWarn
+    try
+        return gWmi.ExecQuery(q)
+    catch
+        gWarn.Push(RegExReplace(q, "^SELECT \* FROM ", ""))
+        return []
 }
 
 ; ── SMBIOS Rank ──────────────────────────────────────────────────────
@@ -549,16 +573,20 @@ SmbiosString(structPtr, structLen, idx) {
     return s
 }
 
-ReadSmbiosRank() {
+; 传 table（RawSMBIOSData 缓冲区）就解析它，不传就去取固件表——自测靠前者用合成表
+; 验证位段，否则「本机恰好算对」的错位永远测不出来。
+ReadSmbiosRank(table := 0) {
     ranks := Map()
-    size := DllCall("GetSystemFirmwareTable", "uint", 0x52534D42, "uint", 0, "ptr", 0, "uint", 0, "uint")
-    if (size <= 8)
-        return ranks
-    buf := Buffer(size, 0)
-    if !DllCall("GetSystemFirmwareTable", "uint", 0x52534D42, "uint", 0, "ptr", buf, "uint", size, "uint")
-        return ranks
-    len := NumGet(buf, 4, "uint")
-    p := buf.Ptr + 8
+    if !IsObject(table) {
+        size := DllCall("GetSystemFirmwareTable", "uint", 0x52534D42, "uint", 0, "ptr", 0, "uint", 0, "uint")
+        if (size <= 8)
+            return ranks
+        table := Buffer(size, 0)
+        if !DllCall("GetSystemFirmwareTable", "uint", 0x52534D42, "uint", 0, "ptr", table, "uint", size, "uint")
+            return ranks
+    }
+    len := NumGet(table, 4, "uint")
+    p := table.Ptr + 8
     end := p + len
     while (p + 4 <= end) {
         t := NumGet(p, 0, "uchar")
@@ -581,6 +609,24 @@ ReadSmbiosRank() {
         p := q + 2
     }
     return ranks
+}
+
+; 自测用：造一张只含一条 Type 17 的 SMBIOS 原始表（RawSMBIOSData 头 + 结构 + 字符串区）。
+FakeSmbios(attr, sizeKB) {
+    l := 0x1C
+    s := "DIMM_A1"
+    n := l + StrLen(s) + 2
+    t := Buffer(8 + n, 0)
+    NumPut("uint", n, t, 4)
+    p := t.Ptr + 8
+    NumPut("uchar", 17, p, 0)
+    NumPut("uchar", l, p, 1)
+    NumPut("ushort", sizeKB, p, 0x0C)
+    NumPut("uchar", 1, p, 0x10)
+    NumPut("uchar", attr, p, 0x1B)
+    loop StrLen(s)
+        NumPut("uchar", Ord(SubStr(s, A_Index, 1)), p, l + A_Index - 1)
+    return t
 }
 
 SlotLabels(sticks) {
@@ -862,6 +908,13 @@ SysRows(d) {
     r.Push(["系统序列号", Dash(o.Has("serial") ? o["serial"] : "")])
     if (d["tz"] != "")
         r.Push(["时区", d["tz"]])
+    ; 采不到就如实说：某一类 WMI 查询失败时其余页面仍照常显示，但缺了哪一类要写明，
+    ; 否则用户看到「未检测到处理器」会以为是硬件问题。
+    if (d.Has("warn") && d["warn"].Length) {
+        r.Push(["", ""])
+        r.Push(["── 读取提示 ──", ""])
+        r.Push(["未响应的 WMI 类", JoinNames(d["warn"])])
+    }
     if (d["sounds"].Length) {
         r.Push(["", ""])
         r.Push(["── 音频设备 ──", ""])
@@ -915,6 +968,10 @@ class FlatScroll {
         this.lastV := -1, this.lastCount := -1
         this.rows := 0, this.viewRows := 1, this.top := 0, this.maxTop := 0
         this.ops := [], this.dragging := false
+        ; SetTimer 按 FuncObj 的「身份」认定时器：每次 ObjBindMethod 都是新对象，
+        ; 拿它去关会关不掉（旧定时器照跑，重复开还会越叠越多）。所以这里绑一次、全程复用。
+        this.fnTick := ObjBindMethod(this, "DragTick")
+        this.fnSync := ObjBindMethod(this, "Sync")
         ; +0x100 是 SS_NOTIFY：不加的静态控件对命中测试返回 HTTRANSPARENT，点击会穿透到父窗口，
         ; 自绘条就永远收不到 WM_LBUTTONDOWN。轨道拆成「滑块前」「滑块后」两段，与滑块永不重叠
         ; —— 叠放时谁在上由 z 序决定，宿主里实测抬到 HWND_TOP 也压不住，索性别让它重叠。
@@ -1137,12 +1194,12 @@ class FlatScroll {
         this.dragging := true, this.gBase := g, this.pBase := this.top
         this.cBase := NumGet(pt, 4, "Int")
         DllCall("user32\SetCapture", "Ptr", this.thumbV.Hwnd)
-        SetTimer(ObjBindMethod(this, "DragTick"), 20)
+        SetTimer(this.fnTick, 20)
     }
 
     DragTick() {
         if (!GetKeyState("LButton", "P")) {
-            SetTimer(ObjBindMethod(this, "DragTick"), 0)
+            SetTimer(this.fnTick, 0)
             DllCall("user32\ReleaseCapture")
             this.dragging := false
             return
@@ -1186,8 +1243,8 @@ class FlatScroll {
         if (this.dead)
             return
         this.dead := true
-        SetTimer(ObjBindMethod(this, "Sync"), 0)
-        SetTimer(ObjBindMethod(this, "DragTick"), 0)
+        SetTimer(this.fnSync, 0)
+        SetTimer(this.fnTick, 0)
         if (this.dragging)
             DllCall("user32\ReleaseCapture")
     }
@@ -1398,7 +1455,7 @@ BuildGui() {
     ; 整段复用已验证的 FlatScroll（槽 BAND / 滑块 ACCENT）。
     gScroll := FlatScroll(gGui, gList, LIST_X + 1, LIST_TOP + HEAD_H + 1, LIST_W - 2, LIST_H - 1)
     HookBarInput()
-    SetTimer(ObjBindMethod(gScroll, "Sync"), 60)
+    SetTimer(gScroll.fnSync, 60)
 
     ; F5 重新采集（窗口激活时）。
     try {
@@ -1515,6 +1572,7 @@ if (A_Args.Length >= 1 && A_Args[1] = "--selftest")
     RunSelfTest(A_Args.Length >= 2 ? A_Args[2] : A_ScriptDir "\硬件信息\selftest-result.txt")
 
 RunSelfTest(path) {
+    global gWmi, gWarn
     out := ""
     Emit(s) => out .= s "`n"
 
@@ -1538,6 +1596,9 @@ RunSelfTest(path) {
     Emit((CpuSig("") = "" ? "PASS " : "FAIL ") "无 ProcessorId 时不硬编")
     Emit((FmtBytes(6442450944) = "6 GB" ? "PASS " : "FAIL ") "REG_QWORD 显存 → 6 GB")
     Emit((ConnName(5) = "HDMI" && ConnName(10) = "DisplayPort" ? "PASS " : "FAIL ") "显示器接口码")
+    ; 0 是合法值：WmiMonitorConnectionParams 的 VideoOutputTechnology=0 就是 VGA（模拟）。
+    Emit((ConnName(0) = "VGA（模拟）" ? "PASS " : "FAIL ") "接口码 0 = VGA")
+    Emit((Prop({n: 0}, "n") = 0 && Prop({}, "n", "d") = "d" ? "PASS " : "FAIL ") "0 不当缺失，缺字段才用默认值")
     Emit((InStr(FeatureList(), "SSE2") ? "PASS " : "FAIL ") "指令集含 SSE2")
     Emit((BusName(Map("iface", "SCSI", "pnpid", "SCSI\DISK&VEN_NVME&PROD_X\5&1")) = "NVMe"
         && BusName(Map("iface", "IDE", "pnpid", "IDE\DISKSCSI\5&1")) = "IDE" ? "PASS " : "FAIL ") "NVMe 盘不按 WMI 的 SCSI 论")
@@ -1624,18 +1685,24 @@ RunSelfTest(path) {
         Emit((d["os"].Count > 0 ? "PASS " : "FAIL ") "操作系统信息非空")
     }
 
-    ; 5. SMBIOS Rank：Type 17 Attributes 的 bit3:0 是 Rank 数（dmidecode 取 data[0x1B] & 0x0F）
-    ranks := ReadSmbiosRank()
-    bad := 0
-    got := 0
-    for loc, r in ranks {
-        if (r < 0 || r > 15)
-            bad++
-        if (r > 0)
-            got++
-    }
-    Emit((bad = 0 ? "PASS " : "FAIL ") "Rank 值全部落在 0..15")
-    Emit((ranks.Count = 0 || got > 0 ? "PASS " : "FAIL ") "实机内存条读到了非零 Rank")
+    ; 4.5 单个类失败只记一条警告并返回空列表，不往外抛——一个 try 罩全部时这里整轮都会空。
+    ; 用「一查就炸」的假连接模拟某一类不可用：真 WMI 里查不存在的类只返回空集，不报错。
+    keep := gWmi
+    gWarn := []
+    gWmi := Map()
+    none := WmiQ("SELECT * FROM Fake")
+    gWmi := keep
+    Emit((Type(none) = "Array" && none.Length = 0 && gWarn.Length = 1 ? "PASS " : "FAIL ") "WMI 单类失败只记警告")
+
+    ; 5. SMBIOS Rank：用合成表验证位段，不靠本机恰好算对
+    ; Type 17 Attributes（offset 0x1B）的 bit3:0 是 Rank 数。断言取 0x02 / 0x01 两个值：
+    ; 若改回 1.0.x 的 (attr >> 3) & 3，两者都会算成 0，这三条立刻红。
+    r1 := ReadSmbiosRank(FakeSmbios(0x02, 8192))
+    Emit((r1.Count = 1 && r1["DIMM_A1"] = 2 && RankName(r1["DIMM_A1"]) = "2R" ? "PASS " : "FAIL ") "Attributes 0x02 → 2R")
+    r2 := ReadSmbiosRank(FakeSmbios(0x01, 8192))
+    Emit((r2["DIMM_A1"] = 1 && RankName(r2["DIMM_A1"]) = "1R" ? "PASS " : "FAIL ") "Attributes 0x01 → 1R")
+    Emit((ReadSmbiosRank(FakeSmbios(0x00, 8192))["DIMM_A1"] = 0 ? "PASS " : "FAIL ") "Attributes 0x00 → 未填")
+    Emit((ReadSmbiosRank(FakeSmbios(0x02, 0)).Count = 0 ? "PASS " : "FAIL ") "空槽（Size=0）不记")
 
     fails := 0
     for ln in StrSplit(out, "`n")
@@ -1656,25 +1723,30 @@ if (A_Args.Length >= 1 && A_Args[1] = "--dump")
 
 RunDump(path) {
     d := Collect()
-    pages := BuildPages(d)
     out := ""
-    for p in pages {
-        out .= "===== " p["name"] " =====`n"
-        for r in p["rows"] {
-            if (r[1] = "" && r[2] = "")
-                out .= "`n"
-            else if (r[2] = "")
-                out .= r[1] "`n"
-            else
-                out .= r[1] "： " r[2] "`n"
+    ; 采集失败不能导出一份「成功」的报告：文件照样写（便于排查），但内容说清失败了，
+    ; 退出码给非 0——批处理 / 脚本调用方靠退出码判断，不能骗它们。
+    if (d["error"] != "") {
+        out := "采集失败：" d["error"] "`n"
+    } else {
+        for p in BuildPages(d) {
+            out .= "===== " p["name"] " =====`n"
+            for r in p["rows"] {
+                if (r[1] = "" && r[2] = "")
+                    out .= "`n"
+                else if (r[2] = "")
+                    out .= r[1] "`n"
+                else
+                    out .= r[1] "： " r[2] "`n"
+            }
+            out .= "`n"
         }
-        out .= "`n"
     }
     if (pos := InStr(path, "\", false, -1) - 1) > 0
         try DirCreate(SubStr(path, 1, pos))
     try FileDelete(path)
     FileAppend(out, path, "UTF-8")
-    ExitApp(0)
+    ExitApp(d["error"] != "" ? 1 : 0)
 }
 
 BuildGui()
