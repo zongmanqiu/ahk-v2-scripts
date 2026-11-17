@@ -2,6 +2,29 @@
 
 只增不改：每次发版在最上面加一段 `## <版本>（日期）`。
 
+## 1.1.0（2026-11-17）
+
+补齐 1.0.0 的两处覆盖缺口。起因：用户拿 `.ex/右键菜单/右键菜单项目原理调研报告.md` 这个文件反问"它的右键菜单怎么管理"——实测发现 1.0.0 只列了 L1 静态 verb 的一部分，既没按文件类型，也没有 COM 扩展，而这个文件上真正想关的 7-Zip / ima / 360 / Unlocker 全是 COM 扩展。
+
+**新增**
+- **L2 COM 扩展管理**：列出各位置的 `shellex\ContextMenuHandlers`，隐藏用 `HKCU\...\Shell Extensions\Blocked` 按 CLSID 写值名、删值恢复；实测 HKCU 侧 Blocked 生效、CLSID 原键与 HKLM 原值都不动。
+- **按扩展名场景**：左侧第八项填 `.md` / `md` 归一为 `SystemFileAssociations\.md`，列出该类型专属菜单项。
+- **来源列**：列表从三列扩为四列（菜单项 / 来源 / 状态 / 位置），静态与 COM 一眼可分；COM 项位置列显示 `—`（DLL 动态绘制，不支持置顶/置底）。
+- **系统共享 CLSID 拒写**：共享 / 投射 / 还原 / 照片 / 库这类共用 CLSID 一旦 Blocked 会连带弄坏系统功能，脚本拒写并如实提示。
+
+**机制与源码**
+- COM 显示名优先取 handler 注册名（7-Zip / ImaContextMenu / Safe360Ext / UnLockerMenu 好认），CLSID 默认值次之；`ShellContextMenu Class` 这类泛名不采，回退注册名或 GUID。
+- 造 `--probe verb <根> <verb> <动作>` 与 `--probe com <CLSID> <hide|show>` 两条静默分支，实机回归驱动同一套写函数（宿主 MCP 的 send_input 命中不到被装饰色块包住的 ListView，K19）。
+
+**坑（本轮踩到并修掉）**
+- `--probe verb` 的参数个数判成 `>= 6`，实际只有 5 个（`--probe` / `verb` / 根 / verb / 动作），一律报"probe 参数不对"——改 `>= 5` 后六层回归才通。这说明"新写的检查项先拿旧版本跑一次能红"的取证法也要覆盖参数个数这类边界。
+- 列表协位置根不再含 `\shell`：位置定义改为 `*`、`Directory`、`Directory\Background` 这类根，枚举时再拼 `\shell` / `\shellex\ContextMenuHandlers`。
+- COM 项进来后 18 行超出可视区，comctl32 把原生滚动条刷出来（灰条，违反 UI规范）；移植《文件解锁》1.3.1 的 `class FlatScroll` 自绘竖条，每次刷新列表后 `Layout()` 摘原生条 + 60ms `Sync` 兜底，列宽之和压到 614 ≤ 摘条后的内宽 620，避免横条再冒出来（K22/K29/K30/K36）。
+- 第八项导航 `按扩展名` 在 y=240..268，原输入框标签画在 y=242，把导航文字盖住（截图实测，几何检查看不出来）；输入框下移到 y=292 让开。
+- AHK 的 `=` 不区分大小写，`NormalizePos("Top")` 曾被误当 `top`——自测先红后改用 `==`。
+
+**验收**：`--selftest` 11 项全绿；`ui_static.py 右键菜单整理` 10/10；六层 MCP 实机回归 ALL PASS（selftest / GUI 几何 820×450 + 8 导航 + 四列 / 真实 18 项含静态+COM 两来源 / L1 隐藏恢复只改 HKCU 影子键 / L1 位置三档只改 HKCU / L2 Blocked 按 CLSID 增删且 CLSID 显示名与 HKLM 原键不变）；截图确认导航项完整、自绘滚动条在位、无原生灰条。
+
 ## 1.0.0（2026-11-17）
 
 首个正式版。零提权的右键菜单管理器，只做隐藏/恢复菜单项与调整位置两件事。全程不改宿主，MCP 实机闭环。
