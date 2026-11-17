@@ -2,7 +2,7 @@
 ; @name         文件解锁
 ; @id           file-unlock
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.3.1
+; @version      1.3.2
 ; @description  拖入文件或文件夹，自动检测占用，一键解除占用或删除（含保留名/权限受限文件）
 ; @author       邱宗满
 ; @date         2026-11-17
@@ -723,8 +723,9 @@ BuildGui() {
 }
 
 ; 缩放：按客户区重算所有块。★不再整窗 Redraw —— 那在拖边框时会整屏闪（K44/K47）。
-; 静态色块的背景走 WM_CTLCOLORSTATIC：只改几何不会重画，最大化后会停在旧宽度，
-; 但要逐个 InvalidateRect（第三参 0 = 不擦背景），整窗 Redraw 会闪。
+; 静态色块/按钮背景走 WM_CTLCOLORSTATIC：只改几何不会重画，最大化后停在旧宽度；
+; 按钮更糟——Move 时 Windows 把旧位图搬到新位置，不重绘就堆成竖条纹。
+; 逐个 InvalidateRect（第三参 1 = 擦背景）让每个控件自绘，既不整窗闪也不留残影。
 OnSize(guiObj, minMax, width, height) {
     if (minMax = -1 || width < 1 || height < 1 || !IsObject(gScroll))
         return
@@ -774,9 +775,9 @@ Layout(cw, ch) {
     gHdrType.Move(typeX, LIST_Y + 1, 72, H_HEADER)
     gHdrOcc.Move(occX, LIST_Y + 1, 122, H_HEADER)
 
-    ; 静态色块逐个失效（不擦背景）—— 只改几何不会触发重画，整窗 Redraw 会闪（K47）。
+    ; 静态色块逐个失效并擦背景 —— 只改几何不会触发重画，整窗 Redraw 会闪（K47）。
     for c in [gLvWhite, gLineTop, gLineBot, gLineLft, gLineRgt, gBand, gHdrPath, gHdrType, gHdrOcc]
-        DllCall("user32\InvalidateRect", "Ptr", c.Hwnd, "Ptr", 0, "Int", 0)
+        DllCall("user32\InvalidateRect", "Ptr", c.Hwnd, "Ptr", 0, "Int", 1)
 
     ; 列表几何交给 gScroll：它按内容超出与否决定给竖条留 10px，再 Move 列表（K43）。
     gScroll.x := EDGE + 1, gScroll.y := LIST_Y + 1 + H_HEADER
@@ -788,12 +789,18 @@ Layout(cw, ch) {
     xUn := xDel - INLINE_GAP - gBtnUnlock.w
     MoveBtn(gBtnUnlock, xUn, ACT_Y)
     MoveBtn(gBtnDel, xDel, ACT_Y)
+    ; ★ 按钮是两层 Text（外框 + 内层）：Move 后必须两层都失效擦背景，
+    ;   否则 Windows 把旧位图搬到新位置，堆成竖条纹（用户截图实证）。
+    for b in [gBtnUnlock, gBtnDel] {
+        DllCall("user32\InvalidateRect", "Ptr", b.outer.Hwnd, "Ptr", 0, "Int", 1)
+        DllCall("user32\InvalidateRect", "Ptr", b.inner.Hwnd, "Ptr", 0, "Int", 1)
+    }
     gInfo.Move(EDGE, ACT_Y, xUn - EDGE - INLINE_GAP, H_ACTION)
 
     gStBand.Move(0, ST_Y, cw, H_STATUS)
     gStatus.Move(12, ST_Y, cw - 24, H_STATUS)
     for c in [gStBand, gStatus, gInfo]
-        DllCall("user32\InvalidateRect", "Ptr", c.Hwnd, "Ptr", 0, "Int", 0)
+        DllCall("user32\InvalidateRect", "Ptr", c.Hwnd, "Ptr", 0, "Int", 1)
 }
 
 ; 列宽按「可视宽」分配：出现竖条时可视宽少 10px，路径列跟着收，否则长路径被裁。
