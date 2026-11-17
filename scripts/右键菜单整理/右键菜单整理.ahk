@@ -2,15 +2,15 @@
 ; @name         右键菜单整理
 ; @id           context-menu-tidy
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.1.0
-; @description  列出文件/文件夹/空白处/驱动器及各扩展名的右键菜单项（静态 verb 与 COM 扩展），逐项隐藏或调整位置，只写 HKCU 可恢复
+; @version      1.2.0
+; @description  拖入文件/文件夹读出它的右键菜单，或看桌面空白/文件夹空白的菜单，逐项隐藏或调整位置，只写 HKCU 可恢复
 ; @author       邱宗满
 ; @date         2026-11-17
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
 ; @host         AHKDeck 0.3.6+（亦可独立运行）
-; @entry        主窗口左侧选位置或填扩展名、右侧选菜单项，底部按钮隐藏/显示/置顶/置底；--selftest 为无 GUI 分支
+; @entry        左侧三个入口（拖入对象/桌面空白/文件夹空白），拖入文件或文件夹即展开它的菜单；--selftest 为无 GUI 分支
 ; ==/UserScript==
 ;
 ; 右键菜单整理：零提权的右键菜单管理器。右键菜单一个项来自三层，本脚本覆盖前两层：
@@ -23,6 +23,13 @@
 ; ★ 两层机制都实测过（探针用完即删，见 info/HISTORY.md 1.0.0/1.1.0）：
 ;   HKCU 影子键/Blocked 的值在 HKCR 合并视图可见；HKLM 原值与 command 仍照常合并；
 ;   菜单项不被写坏；删值即恢复。
+;
+; 1.2.0 起交互改「3 种场景」：拖入具体对象 / 桌面空白 / 文件夹空白。
+;   ★ 只读渲染菜单（IContextMenu）拿不到可写的来源：COM 项是 OWNERDRAW 连 verb 都没有，
+;   静态项只有 verb 没有位置根——故仍读注册表来源，再由脚本按对象类型合并展开，
+;   "3 种"是交互形态，不是读取引擎（实测数据见 info/HISTORY.md 1.2.0）。
+;   一个菜单项常同时来自多个位置（7-Zip 在 * 与 AllFilesystemObjects 都有），
+;   列表去重合并成一项、记住全部 roots，隐藏时对每根都写影子键才有效。
 ;
 ; 蓝本：ContextMenuManager 的 ShellItem.cs（L1 隐藏/位置）+ registry-model.md 的 Blocked 纪律
 ; （L2 CLSID 黑名单）。本文件是独立 AHK v2 实现，未复制其代码。许可 AGPL-3.0。
@@ -38,6 +45,7 @@
 ;   · AHK 的 = 不区分大小写，位置归一用 ==；嵌套函数写外层变量用 ByRef。
 ;   · 内核无 RegEnumKey：用 RegOpenKeyExW + RegEnumKeyExW，锁 KEY_WOW64_64KEY。
 ;   · 宿主 MCP 的 send_input 命中不到被装饰色块包住的 ListView（K19）：写操作走 --probe 分支测。
+;   · 拖入区与导航都是 Text 色块，+0x200 才收 Click/DropFiles（K19）。
 
 #Requires AutoHotkey v2.0
 #SingleInstance Force
@@ -55,7 +63,7 @@ HIDE_MARK          := "ProgrammaticAccessOnly"
 VEL_HIDE_VALUE     := 6527944           ; 0x639bc8
 BLOCK_PATH         := "Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked"
 
-; 客户区 820×450；左侧导航 8 项（末项「按扩展名」带输入框），右侧四列。
+; 客户区 820×450；左侧三入口 + 拖入区，右侧四列。
 WIN_W := 820, WIN_H := 450
 NAV_X := 16, NAV_W := 140, NAV_ITEM_H := 28, NAV_GAP := 4
 LIST_X := 172, LIST_Y := 16, LIST_W := 632, HEAD_H := 28, LIST_H := 330
@@ -64,19 +72,13 @@ LIST_X := 172, LIST_Y := 16, LIST_W := 632, HEAD_H := 28, LIST_H := 330
 COL_NAME_W := 318, COL_SRC_W := 60, COL_STATE_W := 86, COL_POS_W := 150
 BTN_Y := 388, BTN_H := 30
 STATUS_Y := 418, STATUS_H := 30
-; 第八项「按扩展名」占 y=240..268；输入框必须让开，否则盖住导航文字（截图实测）。
-EXT_EDIT_Y := 292
+DROP_Y := 128, DROP_H := 116, DROP_LABEL_Y := 252
 
-; 七个固定位置 + 一个按扩展名（动态）。suffix 是位置根，不含 \shell。
+; 三种场景（交互形态）。位置根由 SceneRoots() 按对象类型展开。
 SceneDefs() => [
-    { key: "file",    name: "文件",         suffix: "*" },
-    { key: "dir",     name: "文件夹",       suffix: "Directory" },
-    { key: "bg",      name: "文件夹空白处", suffix: "Directory\Background" },
-    { key: "drive",   name: "驱动器",       suffix: "Drive" },
-    { key: "folder",  name: "文件夹对象",   suffix: "Folder" },
-    { key: "all",     name: "所有对象",     suffix: "AllFilesystemObjects" },
-    { key: "desktop", name: "桌面背景",     suffix: "DesktopBackground" },
-    { key: "ext",     name: "按扩展名",     suffix: "" }
+    { key: "obj",    name: "拖入文件/文件夹" },
+    { key: "deskbg", name: "桌面空白处" },
+    { key: "dirbg",  name: "文件夹空白处" }
 ]
 
 ; 系统共享 CLSID：零提权也不能 Block，会连带系统菜单功能。
@@ -113,14 +115,57 @@ IsIndirectString(s) => (s != "" && SubStr(s, 1, 1) = "@")
 IsProtectedVerb(v) => (v = "open" || v = "edit")
 ShadowKey(suffix, verb) => "HKCU\Software\Classes\" suffix "\shell\" verb
 
-; 扩展名归一：".MD" / "md" → "SystemFileAssociations\.md"。
-NormalizeExt(raw) {
-    e := Trim(raw)
-    if (e = "")
-        return ""
-    if SubStr(e, 1, 1) != "."
-        e := "." e
-    return "SystemFileAssociations\" e
+; 文件对象的来源根：通用项 + 扩展名键 + ProgID。
+; 拆成纯函数便于 selftest：isDir 由 DirExist 判，ext 带点，progid 来自 HKCR\.<ext> 默认值。
+ObjRoots(isDir, ext := "", progid := "") {
+    if (isDir)
+        return ["Directory", "Folder", "AllFilesystemObjects"]
+    roots := ["*", "AllFilesystemObjects"]
+    if (ext != "")
+        roots.Push("SystemFileAssociations\" ext)
+    if (progid != "")
+        roots.Push(progid)
+    return roots
+}
+
+; 三场景 → 要枚举的位置根（实测映射，见 HISTORY 1.2.0）。
+;   deskbg = Directory\Background（新建/AnyCode/cmd）+ DesktopBackground（个性化/壁纸）
+;   dirbg  = Directory\Background
+;   obj    = 按文件/文件夹分别展开 ObjRoots()
+SceneRoots(sceneKey, dropPath := "") {
+    switch sceneKey {
+        case "deskbg":
+            return ["Directory\Background", "DesktopBackground"]
+        case "dirbg":
+            return ["Directory\Background"]
+        case "obj":
+            if (dropPath = "")
+                return []
+            if DirExist(dropPath)
+                return ObjRoots(true)
+            SplitPath(dropPath, , , &ext)   ; AHK 的 Ext 不带点："md"
+            if (ext != "" && SubStr(ext, 1, 1) != ".")
+                ext := "." ext
+            pid := RegGet(HKEY_CLASSES_ROOT, ext, "", "")
+            return ObjRoots(false, ext, pid)
+    }
+    return []
+}
+
+; 多来源合并：隐藏优先于系统隐藏优先于显示；置顶 > 置底 > 默认。
+MergeState(states) {
+    if (states.Has("hidden"))
+        return "hidden"
+    if (states.Has("syshidden"))
+        return "syshidden"
+    return "show"
+}
+MergePos(poses) {
+    if (poses.Has("top"))
+        return "top"
+    if (poses.Has("bottom"))
+        return "bottom"
+    return "default"
 }
 
 ; CLSID 是不是系统共享（拒写）。
@@ -237,18 +282,14 @@ NotifyAssocChanged() =>
 
 ; ── 全局状态 ────────────────────────────────────────────────────────────
 global gGui := 0, gList := 0, gStatus := 0, gNavBtns := []
-global gItems := [], gScene := 1, gExtEdit := 0, gScroll := 0
+global gItems := [], gScene := 1, gScroll := 0
+global gDropPath := "", gDropLabel := 0
 
 ; ── 数据层 ──────────────────────────────────────────────────────────────
+; 合并多个来源：同一 verb / CLSID 只出一行，roots 记下全部来源，隐藏时逐根写。
 MakeItems(scene) {
-    items := []
-    roots := []
-    if (scene.key = "ext") {
-        suffix := NormalizeExt(gExtEdit ? gExtEdit.Value : "")
-        if (suffix != "")
-            roots.Push(suffix)
-    } else
-        roots.Push(scene.suffix)
+    items := [], seenVerb := Map(), seenCom := Map()
+    roots := SceneRoots(scene.key, gDropPath)
     for root in roots {
         ; L1 静态 verb
         for verb in EnumSubkeys(HKEY_CLASSES_ROOT, root "\shell") {
@@ -256,22 +297,36 @@ MakeItems(scene) {
             own := VerbMarks(HKEY_CURRENT_USER, "Software\Classes\" root "\shell", verb)
             state := effHidden ? (own.Has(HIDE_MARK) ? "hidden" : "syshidden") : "show"
             pos := NormalizePos(RegGet(HKEY_CLASSES_ROOT, root "\shell\" verb, "Position", ""))
+            if seenVerb.Has(verb) {
+                it := items[seenVerb[verb]]
+                it.roots.Push(root)
+                it.state := MergeState(Map(it.state, 1, state, 1))
+                it.pos := MergePos(Map(it.pos, 1, pos, 1))
+                continue
+            }
+            seenVerb[verb] := items.Length + 1
             items.Push({ layer: "verb", key: verb, label: VerbLabel(HKEY_CLASSES_ROOT, root "\shell", verb)
-                       , state: state, pos: pos, src: "静态", root: root })
+                       , state: state, pos: pos, src: "静态", roots: [root] })
         }
         ; L2 COM 扩展
         for name in EnumSubkeys(HKEY_CLASSES_ROOT, root "\shellex\ContextMenuHandlers") {
             ci := ComItem(HKEY_CLASSES_ROOT, root "\shellex\ContextMenuHandlers", name)
-            items.Push({ layer: "com", key: ci.guid, name: name, label: ci.label
-                       , state: ComBlockedState(ci.guid), pos: ""
-                       , src: "COM", root: root, shared: IsSharedClsid(ci.guid) })
+            guid := ci.guid
+            if seenCom.Has(guid) {
+                items[seenCom[guid]].roots.Push(root)
+                continue
+            }
+            seenCom[guid] := items.Length + 1
+            items.Push({ layer: "com", key: guid, name: name, label: ci.label
+                       , state: ComBlockedState(guid), pos: ""
+                       , src: "COM", roots: [root], shared: IsSharedClsid(guid) })
         }
     }
     return items
 }
 
 RefreshItems() {
-    global gList, gStatus, gItems, gScene, gScroll
+    global gList, gStatus, gItems, gScene, gScroll, gDropPath
     scene := SceneDefs()[gScene]
     gItems := MakeItems(scene)
     gList.Delete()
@@ -289,7 +344,7 @@ RefreshItems() {
         if (it.state = "syshidden")
             nSys++
     }
-    scope := scene.key = "ext" ? (gExtEdit.Value ? "扩展名 " gExtEdit.Value : "扩展名（待填）")
+    scope := scene.key = "obj" ? (gDropPath != "" ? "拖入对象 · " gDropPath : "拖入对象（待拖入）")
                                : scene.name
     gStatus.Value := scope " · verb " nVerb " 项 / COM " nCom " 项 · 已隐藏 " nHide " · 系统隐藏 " nSys
     ; Delete/Add 会把 WS_VSCROLL 样式位置回、原生条露出（K22/K36）：填完统一重算占位+摘条。
@@ -306,8 +361,26 @@ SelectedItem() {
 }
 
 ; ── 写操作 ──────────────────────────────────────────────────────────────
+; 静态项对每个来源根都写影子键，否则其它位置仍会把菜单项带出来。
+WriteVerbMarks(roots, verb, action, pos := "") {
+    errs := 0
+    for root in roots {
+        key := ShadowKey(root, verb)
+        try {
+            switch action {
+                case "hide":    RegWrite "", "REG_SZ", key, HIDE_MARK
+                case "show":    try RegDelete key, HIDE_MARK
+                case "pos":     RegWrite pos, "REG_SZ", key, "Position"
+                case "default": try RegDelete key, "Position"
+            }
+        } catch
+            errs++
+    }
+    return errs
+}
+
 SetHide(on) {
-    global gStatus, gScene
+    global gStatus
     it := SelectedItem()
     if !it {
         gStatus.Value := "先在列表里选中一个菜单项"
@@ -322,22 +395,16 @@ SetHide(on) {
         return
     }
     if (it.layer = "verb") {
-        key := ShadowKey(it.root, it.key)
-        try {
-            if on {
-                RegWrite "", "REG_SZ", key, HIDE_MARK
-                gStatus.Value := "已隐藏 verb「" it.label "」"
-            } else {
-                RegDelete key, HIDE_MARK
-                gStatus.Value := "已恢复 verb「" it.label "」" (it.state = "syshidden"
-                    ? "（仍有系统级隐藏标记，需管理员权限）" : "")
-            }
-        } catch as e {
-            gStatus.Value := "操作失败 · " e.Message
+        errs := WriteVerbMarks(it.roots, it.key, on ? "hide" : "show")
+        if errs {
+            gStatus.Value := "有 " errs " 处写入失败（可能需管理员权限）"
             return
         }
+        extra := on ? "" : (it.state = "syshidden" ? "（仍有系统级隐藏标记，需管理员权限）" : "")
+        msg := (on ? "已隐藏 verb「" : "已恢复 verb「") it.label "」" extra " · " it.roots.Length " 处来源"
+        gStatus.Value := msg
     } else {
-        ; COM：Blocked 键按 CLSID 写/删（HKCU，零提权）
+        ; COM：Blocked 键按 CLSID 写/删（HKCU，零提权；全局生效，与来源个数无关）
         try {
             if on {
                 RegWrite "", "REG_SZ", "HKCU\" BLOCK_PATH, it.key
@@ -370,24 +437,22 @@ SetPos(pos) {
         gStatus.Value := "「" it.key "」是打开动词，本脚本不改动它"
         return
     }
-    key := ShadowKey(it.root, it.key)
-    try {
-        if (pos = "default")
-            RegDelete key, "Position"
-        else
-            RegWrite pos, "REG_SZ", key, "Position"
-        gStatus.Value := "「" it.label "」位置已设为" (pos = "top" ? "置顶" : pos = "bottom" ? "置底" : "默认")
-    } catch as e
-        gStatus.Value := "调整位置失败 · " e.Message
+    errs := WriteVerbMarks(it.roots, it.key, pos = "default" ? "default" : "pos", pos)
+    if errs {
+        gStatus.Value := "有 " errs " 处调整失败（可能需管理员权限）"
+        return
+    }
+    posName := pos = "top" ? "置顶" : pos = "bottom" ? "置底" : "默认"
+    gStatus.Value := "「" it.label "」位置已设为" posName " · " it.roots.Length " 处来源"
     NotifyAssocChanged()
     RefreshItems()
 }
 
 ; ── 自绘滚动条 ──────────────────────────────────────────────────────────
 ; 整段复用《文件解锁》1.3.1 /《硬件信息》2.3.4 的 class FlatScroll（只竖轴）。
-; COM 项进来后列数 18 > 可视行，comctl32 会把原生条刷出来（灰条，违反 UI规范）；
-; 原生条颜色脚本拿不到，ShowScrollBar(FALSE) 只是按需隐藏，Move/Add/Delete/ModifyCol
-; 都会把样式位置回，故每次刷新列表后 Layout() 重算 + Sync 兜底。横向条撤掉，列宽做进视口。
+; 原生条由 comctl32 主题引擎绘制，脚本拿不到颜色；ShowScrollBar(FALSE) 只是「按需隐藏」，
+; Move/Add/Delete/ModifyCol/LVM_SCROLL 都会把样式位置回，所以每次动作后补一刀 + Sync 兜底。
+; 横向条撤掉，列宽做进视口。
 class FlatScroll {
     __New(g, lv, x, y, w, h, t := 10) {
         this.g := g, this.lv := lv
@@ -676,12 +741,26 @@ NavClick(i, *) {
     RefreshItems()
 }
 
+OnDropFiles(guiObj, ctrlObj, files, x, y) {
+    global gScene, gNavBtns, gDropPath, gDropLabel, gStatus
+    if !files.Length
+        return
+    gDropPath := files[1]
+    gScene := 1
+    for j, b in gNavBtns
+        b.Opt("Background" (j = 1 ? "EBF2FB" : "F7F9FC"))
+    SplitPath(gDropPath, &name)
+    gDropLabel.Value := "当前：" name (DirExist(gDropPath) ? "（文件夹）" : "（文件）")
+    RefreshItems()
+}
+
 BuildGui() {
-    global gGui, gList, gStatus, gNavBtns, gExtEdit
+    global gGui, gList, gStatus, gNavBtns, gDropLabel
     gGui := Gui("", "右键菜单整理")
     gGui.BackColor := "F7F9FC"
     gGui.SetFont("s10", "Microsoft YaHei UI")
     gGui.OnEvent("Close", (*) => (gScroll ? gScroll.Stop() : 0, ExitApp()))
+    gGui.OnEvent("DropFiles", OnDropFiles)
 
     gNavBtns := []
     y := 16
@@ -692,13 +771,19 @@ BuildGui() {
         gNavBtns.Push(b)
         y += NAV_ITEM_H + NAV_GAP
     }
-    ; 扩展名输入（末项「按扩展名」用）：点输入框即切到扩展名页。
-    gGui.Add("Text", "x" NAV_X " y" (EXT_EDIT_Y - 20) " w" NAV_W " h18"
-        " BackgroundF7F9FC c202B3A +0x200", "输入扩展名")
-    gExtEdit := gGui.Add("Edit", "x" NAV_X " y" EXT_EDIT_Y " w" (NAV_W - 52) " h26 -E0x200"
-        " BackgroundFFFFFF c202B3A", "")
-    gExtEdit.OnEvent("Change", (*) => (gScene := 8, RefreshItems()))
-    FlatButton(gGui, NAV_X + NAV_W - 48, EXT_EDIT_Y, 48, 26, "查询", (*) => (gScene := 8, RefreshItems()))
+
+    ; 拖入区：白底 + 1px 框 + 居中提示（Text 色块 +0x200 才收 DropFiles）。
+    gGui.Add("Text", "x" NAV_X " y" DROP_Y " w" NAV_W " h" DROP_H " BackgroundFFFFFF")
+    gGui.Add("Text", "x" NAV_X " y" DROP_Y " w" NAV_W " h1 BackgroundB7C8E0 +0x200")
+    gGui.Add("Text", "x" NAV_X " y" (DROP_Y + DROP_H - 1) " w" NAV_W " h1 BackgroundB7C8E0 +0x200")
+    gGui.Add("Text", "x" NAV_X " y" DROP_Y " w1 h" DROP_H " BackgroundB7C8E0 +0x200")
+    gGui.Add("Text", "x" (NAV_X + NAV_W - 1) " y" DROP_Y " w1 h" DROP_H " BackgroundB7C8E0 +0x200")
+    gGui.Add("Text", "x" (NAV_X + 6) " y" (DROP_Y + 38) " w" (NAV_W - 12) " h20"
+        " BackgroundFFFFFF c6E9BD4 +0x200 Center", "把文件或文件夹")
+    gGui.Add("Text", "x" (NAV_X + 6) " y" (DROP_Y + 64) " w" (NAV_W - 12) " h20"
+        " BackgroundFFFFFF c6E9BD4 +0x200 Center", "拖到这里")
+    gDropLabel := gGui.Add("Text", "x" NAV_X " y" DROP_LABEL_Y " w" NAV_W " h50"
+        " BackgroundF7F9FC c202B3A +0x200", "当前：未拖入")
 
     ; 列表区：白底块 + 四边线；装饰块 +0x100 让点击穿透（实测 K19）。
     gGui.Add("Text", "x" (LIST_X + 1) " y" (LIST_Y + 1) " w" (LIST_W - 2)
@@ -755,13 +840,16 @@ BuildGui() {
 if (A_Args.Length && A_Args[1] = "--selftest")
     RunSelfTest(A_Args.Length >= 2 ? A_Args[2] : A_ScriptDir "\右键菜单整理\selftest-result.txt")
 
-; --probe <verb|com> ...：实机回归驱动同一套写函数，验证注册表效果。
-;   verb: --probe verb <根suffix> <verb名> <hide|show|top|bottom|default>
-;   com:  --probe com  <CLSID>       <hide|show>
-if (A_Args.Length >= 4 && A_Args[1] = "--probe") {
-    if (A_Args[2] = "verb" && A_Args.Length >= 5)
+; --probe <verb|com|roots> ...：实机回归驱动同一套写函数，验证注册表效果。
+;   verb:  --probe verb  <根suffix> <verb名> <hide|show|top|bottom|default>
+;   com:   --probe com   <CLSID>    <hide|show>
+;   roots: --probe roots <场景key> <结果文件> [拖入路径] → 该场景展开的位置根（逗号分隔）
+if (A_Args.Length >= 3 && A_Args[1] = "--probe") {
+    if (A_Args[2] = "roots" && A_Args.Length >= 4)
+        ProbeRoots(A_Args[3], A_Args.Length >= 5 ? A_Args[5] : "", A_Args[4])
+    else if (A_Args.Length >= 4 && A_Args[2] = "verb" && A_Args.Length >= 5)
         ProbeVerb(A_Args[3], A_Args[4], A_Args[5])
-    else if (A_Args[2] = "com")
+    else if (A_Args.Length >= 4 && A_Args[2] = "com")
         ProbeCom(A_Args[3], A_Args[4])
     else
         throw ValueError("probe 参数不对")
@@ -769,16 +857,11 @@ if (A_Args.Length >= 4 && A_Args[1] = "--probe") {
 }
 
 ProbeVerb(root, verb, action) {
-    key := ShadowKey(root, verb)
-    switch action {
-        case "hide":    RegWrite "", "REG_SZ", key, HIDE_MARK
-        case "show":    try RegDelete key, HIDE_MARK
-        case "top":     RegWrite "top", "REG_SZ", key, "Position"
-        case "bottom":  RegWrite "bottom", "REG_SZ", key, "Position"
-        case "default": try RegDelete key, "Position"
-        default: throw ValueError("未知 probe 动作: " action)
-    }
+    errs := WriteVerbMarks([root], verb, action = "hide" ? "hide" : action = "show" ? "show"
+        : action = "default" ? "default" : "pos", action = "top" || action = "bottom" ? action : "")
     NotifyAssocChanged()
+    if errs
+        ExitApp(1)
 }
 
 ProbeCom(guid, action) {
@@ -790,6 +873,19 @@ ProbeCom(guid, action) {
     NotifyAssocChanged()
 }
 
+ProbeRoots(sceneKey, dropPath, outPath) {
+    roots := SceneRoots(sceneKey, dropPath)
+    s := ""
+    for r in roots
+        s .= (A_Index = 1 ? "" : ",") r
+    ; 测试传来的路径可能是正斜杠（MCP 参数习惯），两个分隔符都找。
+    p := Max(InStr(outPath, "\", false, -1), InStr(outPath, "/", false, -1))
+    if (p > 1)
+        try DirCreate(SubStr(outPath, 1, p - 1))
+    try FileDelete(outPath)
+    FileAppend(s, outPath, "UTF-8")
+}
+
 RunSelfTest(path) {
     out := "", fails := 0
     Chk(cond, name, &out, &fails) {
@@ -798,10 +894,20 @@ RunSelfTest(path) {
             fails++
     }
     defs := SceneDefs()
-    Chk(defs.Length = 8, "七个位置 + 按扩展名", &out, &fails)
-    Chk(defs[1].suffix = "*" && defs[3].suffix = "Directory\Background", "位置根正确（不含 shell）", &out, &fails)
-    Chk(NormalizeExt(".MD") = "SystemFileAssociations\.md" && NormalizeExt("txt") = "SystemFileAssociations\.txt"
-        , "扩展名归一", &out, &fails)
+    Chk(defs.Length = 3 && defs[1].key = "obj" && defs[2].key = "deskbg" && defs[3].key = "dirbg"
+        , "三场景：拖入/桌面空白/文件夹空白", &out, &fails)
+    r1 := SceneRoots("deskbg"), r2 := SceneRoots("dirbg")
+    Chk(r1.Length = 2 && r1[1] = "Directory\Background" && r1[2] = "DesktopBackground"
+        && r2.Length = 1 && r2[1] = "Directory\Background"
+        , "桌面空白=背景+个性化、文件夹空白=背景", &out, &fails)
+    rf := ObjRoots(false, ".md", "txtfile"), rd := ObjRoots(true)
+    Chk(rf[1] = "*" && rf[2] = "AllFilesystemObjects" && rf[3] = "SystemFileAssociations\.md"
+        && rf[4] = "txtfile", "文件对象展开四类来源", &out, &fails)
+    Chk(rd[1] = "Directory" && rd[2] = "Folder" && rd[3] = "AllFilesystemObjects"
+        && rd.Length = 3, "文件夹对象展开三类来源", &out, &fails)
+    Chk(MergeState(Map("show", 1, "hidden", 1)) = "hidden"
+        && MergeState(Map("show", 1, "syshidden", 1)) = "syshidden", "多来源状态合并", &out, &fails)
+    Chk(MergePos(Map("default", 1, "bottom", 1, "top", 1)) = "top", "多来源位置合并", &out, &fails)
     m1 := Map("ProgrammaticAccessOnly", ""), m2 := Map("HideBasedOnVelocityId", VEL_HIDE_VALUE)
     m3 := Map("LegacyDisable", ""), m4 := Map("CommandFlags", 8), m5 := Map("CommandFlags", 7)
     Chk(HiddenByMarks(m1) && HiddenByMarks(m2) && HiddenByMarks(m3) && HiddenByMarks(m4), "四种隐藏标记都认", &out, &fails)

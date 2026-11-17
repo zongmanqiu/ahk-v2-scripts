@@ -2,6 +2,32 @@
 
 只增不改：每次发版在最上面加一段 `## <版本>（日期）`。
 
+## 1.2.0（2026-11-17）
+
+按用户"做太麻烦"的反馈，把交互从 8 导航 + 扩展名输入砍成**3 种日常场景**：拖入文件/文件夹、桌面空白处、文件夹空白处。读取引擎仍是注册表来源表（见下方"为什么不是直接读菜单"）。
+
+**为什么不是"直接读取右键菜单"**：用户提议拖入后直接读这个对象的真实右键菜单。一次性探针（用完即删）实测 IContextMenu：`.md` 文件返回 11 项、显示名所见即所得（打开/管理/7-Zip/剪切/…），但 `7-Zip`、"包含到库中"这类 COM 项是 OWNERDRAW（`id=ffffffff`），**连 verb 都取不到**；静态项只有 verb（open/cut/copy），**不告诉你来自 `*` 还是扩展名还是 ProgID**。真实菜单是"渲染结果"，隐藏要的是"渲染来源"，缺这条映射就退化成只读查看器，正好丢掉用户要的隐藏+位置。故保留注册表读取，按对象类型合并展开。
+
+**3 场景的位置根（实测，见 `.temp/probe_scenes.py` 探针，用完即删）**
+- 桌面空白处 = `Directory\Background`（AnyCode/cmd/Powershell/New/N 卡/共享/WorkFolders）+ `DesktopBackground`（.Spotlight*/显示设置/EditStickers/个性化/UWTSettings），本机 15 项。
+- 文件夹空白处 = `Directory\Background`，本机 9 项。
+- 拖入文件 = `*` + `AllFilesystemObjects` + `SystemFileAssociations\<ext>` + ProgID（`HKCR\.<ext>` 默认值）；本机 .md 无 ProgID，实际是前三个。
+- 拖入文件夹 = `Directory` + `Folder` + `AllFilesystemObjects`。
+
+**实现要点**
+- 同一菜单项常来自多处（7-Zip 在 `*` 与 `AllFilesystemObjects` 都注册），列表按 verb/CLSID 去重合并成一行，`roots[]` 记下全部来源；`WriteVerbMarks()` 对每个根都写/删影子键，否则别的来源会把菜单项重新带出来。
+- 状态合并 hidden > syshidden > show；位置合并 top > bottom > default。
+- 新增 `--probe roots <key> <结果文件> [路径]` 静默分支，实测三场景展开（宿主 MCP 的 send_input 命中不到被装饰色块包住的拖入区做拖放，故场景展开走探针、GUI 只测几何与两静态场景切换，K19）。
+- 拖入区用 Text 色块 + `+0x200` 才收 `DropFiles`/`Click`（K19）；两行提示拆成两个 Text，避免 `Center`+换行在 132px 窄框里首尾被裁（截图实测）。
+
+**坑（本轮踩到并修掉）**
+- AHK 的 `SplitPath` 返回的扩展名**不带点**（`md` 不是 `.md`），第一次展开成 `SystemFileAssociations\md`，补点后正确。
+- 多行表达式在字符串后换行会被解析成函数调用（`"」" (on ? …)` 报 "does not contain a recognized action"），改成先算局部变量再拼。
+- 本内核无 `StrJoin`，`--probe roots` 改手写拼接。
+- `--probe roots` 的 `FileAppend(.., "*")` 不进 stdout，改为写结果文件供测试读取。
+
+**验收**：`--selftest` 14 项全绿；`ui_static 右键菜单整理` 10/10；六层 MCP 回归 ALL PASS（selftest / roots 三场景展开 / GUI 几何 820×450+3 入口+拖入区+四列 / 场景切换桌面 15 项>文件夹空白 9 项 / L1 多根隐藏与位置三档 / L2 Blocked 增删且 HKLM 原键不变）；截图确认三入口与拖入文字完整、15 行无重复、自绘滚动条在位、无原生灰条。
+
 ## 1.1.0（2026-11-17）
 
 补齐 1.0.0 的两处覆盖缺口。起因：用户拿 `.ex/右键菜单/右键菜单项目原理调研报告.md` 这个文件反问"它的右键菜单怎么管理"——实测发现 1.0.0 只列了 L1 静态 verb 的一部分，既没按文件类型，也没有 COM 扩展，而这个文件上真正想关的 7-Zip / ima / 360 / Unlocker 全是 COM 扩展。
