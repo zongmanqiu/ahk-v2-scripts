@@ -3,18 +3,18 @@
   "id": "night-light",
   "versions": [
     {
-      "version": "1.2.3",
-      "date": "2026-11-15",
-      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/night-light-1.2.3/night-light.ahk",
-      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/night-light-1.2.3/night-light.ahk",
-      "sizeKb": 22.0
-    },
-    {
       "version": "1.2.4",
       "date": "2026-11-16",
       "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/night-light-1.2.4/night-light.ahk",
       "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/night-light-1.2.4/night-light.ahk",
       "sizeKb": 23.9
+    },
+    {
+      "version": "1.2.3",
+      "date": "2026-11-15",
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/night-light-1.2.3/night-light.ahk",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/night-light-1.2.3/night-light.ahk",
+      "sizeKb": 22.0
     }
   ]
 }

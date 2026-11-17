@@ -356,7 +356,10 @@ def main() -> int:
             "sizeKb": round(len(asset_raw) / 1024, 1),
         }
         versions.append(entry)
-        versions.sort(key=lambda v: [int(x) for x in v["version"].split(".")])
+        # 降序：最新版本排第一条。与 info/HISTORY.md「新段在最上面」同序，
+        # 点开 history json 的人第一眼看到的就是当前版本，将来宿主若要解析
+        # 这个数组也不必自己再排一遍。
+        versions.sort(key=lambda v: [int(x) for x in v["version"].split(".")], reverse=True)
         doc["versions"] = versions
         hist_file.write_text(json.dumps(doc, ensure_ascii=False, indent=2) + "\n",
                              encoding="utf-8", newline="\n")
