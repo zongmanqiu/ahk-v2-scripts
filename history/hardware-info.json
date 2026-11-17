@@ -8,6 +8,13 @@
       "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/hardware-info-2.3.3/hardware-info.zip",
       "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/hardware-info-2.3.3/hardware-info.zip",
       "sizeKb": 24.9
+    },
+    {
+      "version": "2.3.4",
+      "date": "2026-11-17",
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/hardware-info-2.3.4/hardware-info.ahk",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/hardware-info-2.3.4/hardware-info.ahk",
+      "sizeKb": 76.4
     }
   ]
 }

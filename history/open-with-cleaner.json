@@ -15,6 +15,13 @@
       "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/open-with-cleaner-1.5.7/open-with-cleaner.ahk",
       "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/open-with-cleaner-1.5.7/open-with-cleaner.ahk",
       "sizeKb": 76.4
+    },
+    {
+      "version": "1.6.0",
+      "date": "2026-11-17",
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/open-with-cleaner-1.6.0/open-with-cleaner.ahk",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/open-with-cleaner-1.6.0/open-with-cleaner.ahk",
+      "sizeKb": 86.2
     }
   ]
 }
