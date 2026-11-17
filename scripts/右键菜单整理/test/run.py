@@ -7,7 +7,7 @@
 只起本脚本自己的 MCP 临时实例，不动用户手开的主程序。分六层：
   1. --selftest 纯函数断言（三场景/来源展开/状态位置合并/隐藏标记/共享CLSID/COM显示名）
   2. --probe roots 实测三场景位置根：桌面=背景+个性化、文件夹空白=背景、拖入文件/文件夹各自展开
-  3. GUI 几何：客户区 820×450、3 入口、拖入区、四列列表、6 按钮、状态条
+  3. GUI 几何：客户区 820×450、3 入口、拖入区、四列列表（顺序/菜单项/来源/状态）、5 个等宽按钮、状态条
   4. 场景切换：点桌面空白/文件夹空白，列表随 HKCR 真实来源变化（桌面多个性化项）
   5. L1 隐藏/恢复 + 位置三档：影子键按根写、HKLM 原键不变（--probe verb 多根）
   6. L2 COM 隐藏/恢复：Blocked 按 CLSID 增删、CLSID 显示名与 HKLM 原键不变
@@ -122,7 +122,8 @@ def test_selftest(m, sid):
                "副本键名可逆", "副本名识别只认", "去掉 & 快捷键标记",
                "顺序列排序键定长补零", "按顺序列升序排组", "同列再点一次反向",
                "按菜单项列排序", "二级项缩进标记与图层", "SHGetFileInfo 类型名",
-               "位置/状态排序档位"):
+               "位置/状态排序档位（含「菜单外」）", "接管闸门：无 MUIVerb 的内建动词不复制",
+               "真菜单文字归一化", "真菜单白名单：友好名宽松匹配"):
         assert kw in text, f"自测断言缺失: {kw}"
     n = len([l for l in text.splitlines() if l.startswith(("PASS ", "FAIL "))])
     print(f"  [1/8] selftest {n} 项全绿（三场景/来源合并/共享CLSID/顺序接管/表头排序）")
@@ -171,25 +172,27 @@ def test_geometry(m, sess):
     # 动作按钮是「文字块(385) 叠 描边框(384)」双层，按文字块统计。
     btns = [x for x in w["controls"] if x.get("client", {}).get("y") == 385
             and x.get("client", {}).get("h") == 28]
-    assert len(btns) == 4, f"4 个动作按钮（切换/上移/下移/刷新）应在 y=385: {len(btns)}"
+    assert len(btns) == 5, f"5 个动作按钮（隐藏/上移/下移/恢复/刷新）应在 y=385: {len(btns)}"
     btns.sort(key=lambda x: x["client"]["x"])
     xs = [x["client"]["x"] for x in btns]
     ws = {x["client"]["w"] for x in btns}
     assert ws == {70}, f"四个按钮必须同宽（文字块 70）: {ws}"
-    assert xs == [173, 253, 333, 413], f"按钮起点应等距 80（173/253/333/413）: {xs}"
+    assert xs == [173, 253, 333, 413, 493], f"按钮起点应等距 80（173..493）: {xs}"
     check = [x for x in w["controls"] if x.get("text") == "隐藏不可见项"]
     assert check and check[0]["client"]["y"] == 384, "勾选框应在按钮行（y=384）"
-    # 1.4.0 五列表头：顺序 / 菜单项 / 来源 / 状态 / 位置，且默认「顺序」后面挂 ↑。
+    # 1.5.0 四列表头：顺序 / 菜单项 / 来源 / 状态（「位置」列已删，顺序号已说明位次），
+    # 且默认「顺序」后面挂 ↑。
     heads = [(x["client"]["x"], x.get("text", "")) for x in w["controls"]
              if x.get("client", {}).get("y") == 17 and x.get("text")]
     titles = [t for _, t in heads]
-    assert len(heads) == 5, f"应有 5 个表头块: {heads}"
+    assert len(heads) == 4, f"应有 4 个表头块: {heads}"
     assert titles[0].startswith("顺序") and "↑" in titles[0], f"默认按顺序升序，表头应带 ↑: {titles[0]}"
-    for i, name in enumerate(("菜单项", "来源", "状态", "位置")):
+    for i, name in enumerate(("菜单项", "来源", "状态")):
         assert titles[i + 1] == name, f"表头 {i+2} 应为「{name}」（未排序列不带箭头）: {titles[i+1]}"
+    assert "位置" not in titles, f"1.5.0 已删「位置」列: {titles}"
     lv = [x for x in w["controls"] if x.get("class") == "SysListView32"]
-    assert lv and lv[0]["items"]["columns"] == 5, f"列表应五列: {lv and lv[0]['items']['columns']}"
-    print("  [3/8] GUI 几何 820×450 + 3 入口 + 拖入区 + 五列 + 4 等宽按钮 + 表头默认顺序↑")
+    assert lv and lv[0]["items"]["columns"] == 4, f"列表应四列: {lv and lv[0]['items']['columns']}"
+    print("  [3/8] GUI 几何 820×450 + 3 入口 + 拖入区 + 四列 + 5 等宽按钮 + 表头默认顺序↑")
 
 
 def status_text(m, sess):
@@ -274,7 +277,7 @@ def test_visible_filter(m, sess):
 def test_scenes(m, sess):
     desk = click_nav(m, sess, 62, "桌面空白处")
     folder = click_nav(m, sess, 94, "文件夹空白处", fewer_than=len(desk))
-    srcs = {r[2] for r in desk}   # 0顺序 1菜单项 2来源 3状态 4位置
+    srcs = {r[2] for r in desk}   # 0顺序 1菜单项 2来源 3状态
     assert "静态" in srcs and "COM" in srcs, f"来源列应含静态+COM: {srcs}"
     print(f"  [5/8] 场景切换：桌面 {len(desk)} 项 > 文件夹空白 {len(folder)} 项（多个性化项），两来源齐")
 
@@ -290,7 +293,7 @@ def test_order_column(m, sess):
     assert subs, f"桌面空白场景应有二级项（新建/发送到）: {rows[:8]}"
     for r in subs:
         assert r[1].startswith("    · "), f"二级项要有缩进圆点: {r}"
-        assert r[3] == "" and r[4] == "—", f"二级项没有状态/位置: {r}"
+        assert r[3] == "", f"二级项没有状态（顺序/来源列另算）: {r}"
     print(f"  [6/8] 顺序列 1..{len(main)} 连续 + {len(subs)} 个二级项留空且带缩进圆点")
 
 

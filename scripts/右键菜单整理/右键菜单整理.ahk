@@ -2,8 +2,8 @@
 ; @name         右键菜单整理
 ; @id           context-menu-tidy
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.4.0
-; @description  拖入文件/文件夹读出它的右键菜单，或看桌面空白/文件夹空白的菜单，逐项隐藏、逐位调顺序，只写 HKCU 可恢复
+; @version      1.5.0
+; @description  拖入文件/文件夹读出它的右键菜单，或看桌面空白/文件夹空白的菜单，逐项隐藏、逐位调顺序，只写 HKCU 可恢复（并可用「恢复」一键退回系统默认）
 ; @author       邱宗满
 ; @date         2026-11-18
 ; @license      AGPL-3.0
@@ -87,13 +87,14 @@ LIBRARY_CLSID      := "{3dad6c5d-2167-4cae-9914-f99e41c12cfa}"
 VEL_HIDE_VALUE     := 6527944           ; 0x639bc8
 BLOCK_PATH         := "Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked"
 
-; 客户区 820×450；左侧三入口 + 拖入区，右侧五列（1.4.0 起加「顺序」）。
+; 客户区 820×450；左侧三入口 + 拖入区，右侧四列（1.5.0 起删掉「位置」——顺序号已经说明位次，
+; 位置列只剩「默认/置顶/置底」，而置顶置底早已没有按钮可写，留着只是噪音）。
 WIN_W := 820, WIN_H := 450
 NAV_X := 16, NAV_W := 140, NAV_ITEM_H := 28, NAV_GAP := 4
 LIST_X := 172, LIST_Y := 16, LIST_W := 632, HEAD_H := 28, LIST_H := 334
-; 五列宽之和 = 52+280+56+78+154 = 620 = 自绘滚动条占位后的列表内宽（630-10），
+; 四列宽之和 = 52+352+96+120 = 620 = 自绘滚动条占位后的列表内宽（630-10），
 ; 少 1px 都会冒出原生横条（K30）。
-COL_ORD_W := 52, COL_NAME_W := 280, COL_SRC_W := 56, COL_STATE_W := 78, COL_POS_W := 154
+COL_ORD_W := 52, COL_NAME_W := 352, COL_SRC_W := 96, COL_STATE_W := 120
 ; 垂直节奏（§10）：列表底 378 → BLOCK_GAP 6 → 按钮 384..414 → BLOCK_GAP 6 → 状态条 420..450 贴底。
 BTN_Y := 384, BTN_H := 30
 BTN_W := 72, BTN_GAP := 8
@@ -499,6 +500,106 @@ ComBlockedState(guid) {
 NotifyAssocChanged() =>
     DllCall("shell32\SHChangeNotify", "Int", 0x08000000, "UInt", 0, "Ptr", 0, "Ptr", 0)
 
+; ── 真实菜单校验（1.5.0）───────────────────────────────────────────────
+; 注册表里有 ≠ 菜单里显示。COM 扩展的 DLL 可以在 QueryContextMenu 里当场决定这次不出项，
+; 本机实测这几个都属于此列：Safe360Ext（360）、加密（EFS，非 NTFS/非加密卷不出）、
+; Offline Files、工作文件夹、ModernSharing。光看注册表永远判不出来。
+; 所以直接问 shell 要一次真实菜单，拿它渲染出的文字集合当白名单；对不上的一律标「菜单外」，
+; 默认被「隐藏不可见项」过滤掉，取消勾选仍能看到（不会悄悄消失）。
+GUIDBuf(s) {
+    b := Buffer(16, 0)
+    s := RegExReplace(s, "[{}\-]")
+    NumPut("UInt", Integer("0x" SubStr(s, 1, 8)), b, 0)
+    NumPut("UShort", Integer("0x" SubStr(s, 9, 4)), b, 4)
+    NumPut("UShort", Integer("0x" SubStr(s, 13, 4)), b, 6)
+    loop 8
+        NumPut("UChar", Integer("0x" SubStr(s, 17 + (A_Index - 1) * 2, 2)), b, 8 + A_Index - 1)
+    return b
+}
+
+; 拿某个文件/文件夹对象的真实上下文菜单文字；拿不到返回 0（调用方据此不做过滤）。
+RealMenuWords(path) {
+    ; SHParseDisplayName 只吃反斜杠路径，传「E:/a/b」直接回 0x80070057(E_INVALIDARG)，
+    ; 表现成「拿不到菜单」，校验被整体跳过（1.5.0 实测踩过一次）。
+    path := StrReplace(path, "/", "\")
+    if (path = "" || !FileExist(path))
+        return 0
+    try {
+        pDesktop := 0
+        if DllCall("shell32\SHGetDesktopFolder", "Ptr*", &pDesktop, "Int")
+            return 0
+        pidl := 0, eaten := 0
+        ComCall(3, pDesktop, "Ptr", 0, "Ptr", 0, "Str", path, "UInt*", &eaten
+            , "Ptr*", &pidl, "Ptr", 0, "Int")
+        if !pidl
+            return 0
+        iidSF := GUIDBuf("{000214E6-0000-0000-C000-000000000046}")
+        iidCM := GUIDBuf("{000214E4-0000-0000-C000-000000000046}")
+        pParent := 0, pidlLast := 0
+        DllCall("shell32\SHBindToParent", "Ptr", pidl, "Ptr", iidSF.Ptr
+            , "Ptr*", &pParent, "Ptr*", &pidlLast, "Int")
+        if !pParent
+            return 0
+        ; GetUIObjectOf 的 apidl 是一个「指向 pidl 数组」的指针，数组里放的是子项 pidl。
+        apidl := Buffer(A_PtrSize, 0)
+        NumPut("Ptr", pidlLast, apidl, 0)
+        pcm := 0
+        ComCall(10, pParent, "Ptr", 0, "UInt", 1, "Ptr", apidl.Ptr, "Ptr", iidCM.Ptr
+            , "Ptr", 0, "Ptr*", &pcm, "Int")
+        if !pcm
+            return 0
+        hmenu := DllCall("user32\CreatePopupMenu", "Ptr")
+        ComCall(3, pcm, "Ptr", hmenu, "UInt", 0, "UInt", 1, "UInt", 0x7FFF, "UInt", 0, "Int")
+        words := Map()
+        CollectMenuWords(hmenu, words)
+        DllCall("user32\DestroyMenu", "Ptr", hmenu)
+        return words.Count ? words : 0
+    } catch
+        return 0
+}
+
+CollectMenuWords(h, words) {
+    static MII_SIZE := A_PtrSize = 8 ? 80 : 44
+    static OFF_TYPEDATA := A_PtrSize = 8 ? 56 : 36
+    static OFF_CCH := A_PtrSize = 8 ? 64 : 40
+    cnt := DllCall("user32\GetMenuItemCount", "Ptr", h, "Int")
+    if (cnt <= 0)
+        return
+    mii := Buffer(MII_SIZE, 0), buf := Buffer(1024, 0)
+    loop cnt {
+        i := A_Index - 1
+        NumPut("UInt", MII_SIZE, mii, 0)
+        NumPut("UInt", 0x100 | 0x4 | 0x40, mii, 4)     ; MIIM_FTYPE|SUBMENU|STRING
+        NumPut("Ptr", buf.Ptr, mii, OFF_TYPEDATA)
+        NumPut("UInt", 512, mii, OFF_CCH)
+        if DllCall("user32\GetMenuItemInfoW", "Ptr", h, "UInt", i, "Int", 1, "Ptr", mii, "Int") {
+            w := NormMenuWord(StrGet(buf, "UTF-16"))
+            if (w != "")
+                words[w] := true
+        }
+    }
+}
+
+; 归一化到「可比对的最小形式」：去尾部加速键 (&X)、去全部 &、去空白、转小写。
+NormMenuWord(s) {
+    s := RegExReplace(s, "\s*\(&?[A-Za-z0-9]\)\s*$", "")
+    s := RegExReplace(s, "&", "")
+    s := RegExReplace(s, "\s+", "")
+    return StrLower(Trim(s))
+}
+
+; 宽松比对：双向子串。友好名「固定到“开始”屏幕」要能对上 shell 的「固定到“开始”」。
+RealMenuHas(words, label) {
+    n := NormMenuWord(label)
+    if (n = "")
+        return false
+    for w in words {
+        if (w = n || InStr(w, n) || InStr(n, w))
+            return true
+    }
+    return false
+}
+
 ; ── 全局状态 ────────────────────────────────────────────────────────────
 global gGui := 0, gList := 0, gStatus := 0, gNavBtns := []
 global gItems := [], gScene := 1, gScroll := 0
@@ -517,6 +618,9 @@ global gSortCol := 1, gSortAsc := true, gHeadBlocks := []
 MakeItems(scene) {
     items := [], seenVerb := Map(), seenCom := Map(), seenComLabel := Map()
     roots := SceneRoots(scene.key, gDropPath)
+    ; 只有「拖入对象」能拿到精确的真菜单（有具体路径）。桌面/文件夹空白场景没有确定对象，
+    ; 拿不到就返回 0，下面的校验整体跳过——宁可多列，也不误删。
+    realWords := (scene.key = "obj" && gDropPath != "") ? RealMenuWords(gDropPath) : 0
     for root in roots {
         reps := ReplicaMap(root)
         ; L1 静态 verb
@@ -565,8 +669,12 @@ MakeItems(scene) {
                 continue
             }
             seenComLabel[ci.label] := items.Length + 1
+            cstate := ComBlockedState(guid)
+            ; 注册了但这次没渲染 → 标「菜单外」。判据只认真实菜单文字，不猜。
+            if (cstate = "show" && realWords && !RealMenuHas(realWords, ci.label))
+                cstate := "absent"
             items.Push({ layer: "com", key: guid, name: name, label: ci.label
-                       , state: ComBlockedState(guid), pos: "", keys: [guid]
+                       , state: cstate, pos: "", keys: [guid]
                        , src: "COM", roots: [root], shared: IsSharedClsid(guid), extended: false, rank: 0 })
         }
     }
@@ -603,22 +711,27 @@ MakeItems(scene) {
     }
     ; 静态项整体排在 COM 扩展前面：真实菜单里也是「注册表静态项 → 各 DLL 插的扩展」，
     ; 混着排会让「新建」这类 COM 项跑到最上面（实测桌面菜单里它排在 NVIDIA 之后）。
+    ; 1.5.0：可调序项（ranked = p000N# 副本）排在「不能改名的静态项」之后——
+    ; shell 按键名字母序摆项，'Powershell' 这类原名一定在 'p0001#xxx' 之前，如实照搬。
     out := []
-    for bucket in [ranked, top, builtin, midV, midC, bot]
+    for bucket in [top, builtin, midV, ranked, midC, bot]
         for it in bucket
             out.Push(it)
     ; 二级内容（发送到 / 新建 / 包含到库中）紧跟在父项后面缩进列出。
-    ; 其余子菜单（7-Zip / 授予访问权限 / 上传至ima）由 DLL 当场生成，注册表无数据源。
+    ; 1.5.0 修：旧代码插入一组子项后直接 break，于是「新建」把后面所有父项的子项都吞掉了，
+    ; 用户拖入文件夹时只看得到「包含到库中」一份子菜单。现在用累计偏移量逐组插入，
+    ; 每个有数据源的父项都能挂上自己的子项。
+    offset := 0
     for i, it in out.Clone() {
         subs := SubItemsFor(it)
-        if (subs.Length) {
-            j := 0
-            for s in subs {
-                out.InsertAt(i + 1 + j, s)
-                j++
-            }
-            break
+        if !subs.Length
+            continue
+        pos := i + 1 + offset
+        for s in subs {
+            out.InsertAt(pos, s)
+            pos++
         }
+        offset += subs.Length
     }
     ; 顺序号：就是它在真实菜单里的位次（1 起）。子项不占号。
     n := 0
@@ -754,14 +867,16 @@ CleanSendToName(file) {
 }
 
 ; 这一项会不会真的出现在右键菜单里：本脚本没隐藏、系统没有隐藏标记、也不是 Extended。
+; absent = 注册表里登记了、但这次 shell 根本没渲染（见 RealMenuWords 的说明）。
 VisibleItem(it) {
     if (it.layer = "sub")
         return true        ; 子项是否列出由父项「发送到」的可见性决定
     return it.state = "show" && !it.extended
 }
 
-StatusRank(s) => s = "show" ? 1 : s = "hidden" ? 2 : s = "syshidden" ? 3 : 0
-StatusText(s) => s = "show" ? "显示" : s = "hidden" ? "已隐藏" : s = "syshidden" ? "系统隐藏" : ""
+StatusRank(s) => s = "show" ? 1 : s = "hidden" ? 2 : s = "syshidden" ? 3 : s = "absent" ? 4 : 0
+StatusText(s) => s = "show" ? "显示" : s = "hidden" ? "已隐藏"
+    : s = "syshidden" ? "系统隐藏" : s = "absent" ? "菜单外" : ""
 PosRank(p) => p = "top" ? 1 : p = "default" ? 2 : p = "bottom" ? 3 : 4
 PosText(p) => p = "top" ? "置顶" : p = "bottom" ? "置底" : "默认"
 
@@ -772,7 +887,6 @@ SortKeyOf(it, col) {
         case 2: return it.label
         case 3: return it.src
         case 4: return StatusRank(it.state) ""
-        case 5: return PosRank(it.pos) ""
     }
     return ""
 }
@@ -799,7 +913,7 @@ SortGroups(groups, col, asc) {
     return res
 }
 
-RefreshItems() {
+RefreshItems(keepMsg := "") {
     global gList, gStatus, gItems, gScene, gScroll, gDropPath, gOnlyVisible, gRowMap
     global gSortCol, gSortAsc
     scene := SceneDefs()[gScene]
@@ -851,8 +965,13 @@ RefreshItems() {
     scope := scene.key = "obj" ? (gDropPath != "" ? "拖入对象 · " gDropPath : "拖入对象（待拖入）")
                                : scene.name
     tail := gOnlyVisible ? " · 仅列可见项" : " · 列出全部项"
-    gStatus.Value := scope " · 显示 " nShown " 项（verb " nVerb " / COM " nCom "）· 已隐藏 "
-        . nHide " · 系统隐藏 " nSys tail
+    ; keepMsg 给写操作用：上移/下移刚刚做的事必须留在状态条上，否则一刷新就被
+    ; 「显示 N 项」的统计盖掉，用户点完看不到任何动静（1.5.0 就是被这个坑误导成"没反应"）。
+    if (keepMsg != "")
+        gStatus.Value := keepMsg
+    else
+        gStatus.Value := scope " · 显示 " nShown " 项（verb " nVerb " / COM " nCom "）· 已隐藏 "
+            . nHide " · 系统隐藏 " nSys tail
     ; Delete/Add 会把 WS_VSCROLL 样式位置回、原生条露出（K22/K36）：填完统一重算占位+摘条。
     if (gScroll && !gScroll.dead) {
         gScroll.Layout()
@@ -871,10 +990,9 @@ RefreshItems() {
 AddRow(it) {
     global gList, gRowMap
     st := it.layer = "sub" ? "" : StatusText(it.state)
-    ps := (it.layer = "sub" || it.layer = "com") ? "—" : PosText(it.pos)
     ; 「顺序」只标真菜单项：二级项没有独立位置，留空（标签自带「    · 」缩进标记，
     ; 这里再补一个点会出现「·  · 文件夹」两粒点）。
-    gList.Add("", it.layer = "sub" ? "" : it.ord, it.label, it.src, st, ps)
+    gList.Add("", it.layer = "sub" ? "" : it.ord, it.label, it.src, st)
     gRowMap.Push(it)
 }
 
@@ -924,11 +1042,23 @@ WriteVerbMarks(roots, verb, action) {
         } catch
             errs++
         ; 恢复完顺手把空壳键删掉：留着空 shell 键，shell 会多列一个没有命令的菜单项。
-        ; 键里还有其它值（比如刚写的 Position）时 RegDelete 会失败，属正常，忽略。
+        ; 键里还有其它值（比如 Position）或子键时原样保留。
         if (action = "show")
-            try RegDelete key
+            PruneKey(key)
     }
     return errs
+}
+
+; 把一个「只剩空壳」的影子键删掉：还有任何值或子键就原样保留。
+; 空 shell 子键会被 shell 当成一个没有命令的菜单项，恢复隐藏之后必须真的清掉，
+; 否则菜单里会多出一行空白（1.5.0 收尾时在 HKCU 里清出 6 个这种空壳）。
+PruneKey(key) {
+    path := StrReplace(key, "HKCU\", "")
+    if RegEnumValues(HKEY_CURRENT_USER, path).Count
+        return
+    if EnumSubkeys(HKEY_CURRENT_USER, path).Length
+        return
+    try RegDelete key
 }
 
 ; 一个按钮两态：选中项现在能看见就显示「隐藏」，已隐藏就显示「显示」。
@@ -952,14 +1082,14 @@ ToggleSelected() {
 ;   键名 0000/0001/0002 走）。所以把该根下静态项整组复制成 p0001#<verb> 这样的副本，
 ;   原件写隐藏标记让位，改前缀号就是改真实顺序。还原 = 删副本 + 去标记。
 MoveVerb(delta) {
-    global gItems, gStatus, gScene, gDropPath
+    global gItems, gStatus, gScene, gDropPath, gRowMap
     it := SelectedItem()
     if !it {
         gStatus.Value := "先在列表里选中一个菜单项"
         return
     }
     if (it.layer = "com") {
-        gStatus.Value := "「" it.label "」是 COM 扩展，位置由它的 DLL 决定，注册表里没有可写的顺序"
+        gStatus.Value := "「" it.label "」是 COM 扩展，菜单里的位置由它的 DLL 决定，注册表里没有可写的顺序"
         return
     }
     if (it.layer = "sub") {
@@ -968,6 +1098,21 @@ MoveVerb(delta) {
     }
     if IsProtectedVerb(it.key) {
         gStatus.Value := "「" it.label "」是打开/编辑动词，本脚本不动它"
+        return
+    }
+    ; 能不能调：必须是「有显式 MUIVerb、改名后显示名不会坏」的 verb。
+    ; 系统内建项（open / cmd / Powershell 这类）的显示名绑在键名上，复制成 p000N# 之后
+    ; 菜单里会直接显示 "p0001#open"，所以只能原地不动（1.5.0 真机复现后加的闸门）。
+    roots := SceneRoots(SceneDefs()[gScene].key, gDropPath)
+    canMove := false
+    for r in roots {
+        if CanReplicate(r, it.key) {
+            canMove := true
+            break
+        }
+    }
+    if !canMove {
+        gStatus.Value := "「" it.label "」是系统内建项（显示名由 Windows 按动词名硬编码），改名会让菜单显示成乱码，只能由系统固定位置"
         return
     }
     idx := 0
@@ -987,7 +1132,7 @@ MoveVerb(delta) {
     loop {
         j += delta
         if (j < 1 || j > gItems.Length) {
-            gStatus.Value := "「" it.label "」已经是" (delta < 0 ? "第一" : "最后") "个可调的静态项了"
+            gStatus.Value := "「" it.label "」已经是" (delta < 0 ? "第一" : "最后") "个可调的菜单项了"
             return
         }
         if (gItems[j].layer = "verb")
@@ -1000,23 +1145,38 @@ MoveVerb(delta) {
     }
     gItems[idx] := other
     gItems[j] := it
-    if (bad := ApplyVerbOrder(SceneRoots(SceneDefs()[gScene].key, gDropPath))) {
+    if (bad := ApplyVerbOrder(roots)) {
         gStatus.Value := "有 " bad " 处顺序写入失败（可能需管理员权限），已回滚"
         RefreshItems()
         return
     }
-    gStatus.Value := "「" it.label "」已" (delta < 0 ? "上移" : "下移") "一位 · 重开右键菜单可见"
     NotifyAssocChanged()
     RefreshItems()
     SelectByKey(it.key)
+    ; 位次在重排之后才准：按列表当前行数一遍，让用户看到「第 N 位」这个具体结果。
+    rank := 0, found := 0
+    for x in gRowMap {
+        if (x.layer != "sub")
+            rank++
+        if (x.layer = "verb" && x.key = it.key) {
+            found := rank
+            break
+        }
+    }
+    gStatus.Value := "「" it.label "」已" (delta < 0 ? "上移" : "下移") "一位"
+        . (found ? "，现在第 " found " 位" : "") " · 关掉再打开右键菜单即可看到"
 }
 
-; 刷新后重新选中同一项，方便连点上下移。
+; 刷新后重新选中同一项并滚到可见，方便连点上下移。
 SelectByKey(verb) {
     global gList, gRowMap
     for i, it in gRowMap {
         if (it.layer = "verb" && it.key = verb) {
             gList.Modify(i, "Select Focus")
+            ; LVM_ENSUREVISIBLE(0x1013)：列表长过一屏时把选中行滚进来，
+            ; 否则上移后选中行可能留在视口外，看着还是「没反应」。
+            DllCall("user32\SendMessageW", "Ptr", gList.Hwnd, "UInt", 0x1013, "Ptr", i - 1
+                , "Ptr", 1, "Ptr")
             return
         }
     }
@@ -1061,6 +1221,12 @@ InList(arr, v) {
 
 ; 重建一个根的顺序：先记下旧的「用户隐藏」意图 → 删旧副本 → 按 seq 建新副本 → 回写隐藏 → 隐藏原件。
 ; 任一步失败就清掉已建副本并返回 false（宁可保持原状，也不留半套让菜单重复/失效）。
+;
+; ★ 1.5.0 修：只接管「有显式 MUIVerb/MuiVerb」的 verb。
+;   实测把 open 这类内建动词复制成 p0001#open 之后，副本的显示名不是「打开」而是
+;   字面的 "p0001#open"——shell 的内建显示名绑在键名上，改名即失效，菜单直接变乱码
+;   （本轮真机复现：Folder 根接管后菜单第一项成了「&p0001#open」）。
+;   所以没有 MUIVerb 的 verb 一律不复制、不隐藏，位置交给系统固定。
 RebuildRoot(root, seq) {
     base := "Software\Classes\" root "\shell"
     ; 1) 收集当前的隐藏意图：已经接管过就看旧副本，首次接管就看原件上的用户标记。
@@ -1085,10 +1251,12 @@ RebuildRoot(root, seq) {
     for name in EnumSubkeys(HKEY_CURRENT_USER, base)
         if IsReplicaName(name)
             RegDelTree(base "\" name)
-    ; 3) 按目标顺序建副本
-    made := []
+    ; 3) 按目标顺序建副本（跳过不能安全改名的 verb）
+    made := [], numbering := Map()
     n := 0
     for verb in seq {
+        if !CanReplicate(root, verb)
+            continue
         n++
         dst := base "\" ReplicaName(n, verb)
         try CopyKeyTree(HKEY_CLASSES_ROOT, root "\shell\" verb, dst, CopySkip(root, verb))
@@ -1098,20 +1266,38 @@ RebuildRoot(root, seq) {
             return false
         }
         made.Push(ReplicaName(n, verb))
+        numbering[verb] := n
     }
     ; 4) 把旧意图写回新副本
-    for verb in seq {
+    for verb in numbering {
         if wasHidden.Has(verb)
-            try RegWrite "", "REG_SZ", "HKCU\" base "\" ReplicaName(IndexInSeq(seq, verb), verb), HIDE_MARK
+            try RegWrite "", "REG_SZ", "HKCU\" base "\" ReplicaName(numbering[verb], verb), HIDE_MARK
     }
-    ; 5) 原件让位：始终带隐藏标记，菜单里只留副本
-    for verb in seq {
+    ; 5) 只让被复制的原件让位；没复制的原件保持系统原样（不能连带隐藏）。
+    for verb in numbering {
         try {
             RegWrite "", "REG_SZ", "HKCU\" base "\" verb, HIDE_MARK
             RegWrite "1", "REG_SZ", "HKCU\" base "\" verb, TAKE_MARK
         }
     }
     return true
+}
+
+; 能不能把这项复制成 p000N# 副本而不坏掉显示名。
+; 判据就是原件自己有没有显式名字（MUIVerb / MuiVerb）。没有 MUIVerb 的项，显示名由
+; shell 按键名硬编码（open→「打开」、Powershell→「在此处打开 Powershell 窗口」），
+; 改名前缀必然把菜单变成 "p0001#open" 这种乱码。
+; 注意：opennewwindow / opennewtab 这类虽然算「打开」系内建动词（排最前），但它们
+; 自己带 MUIVerb，改名是安全的，所以这里不再按 IsShellBuiltinVerb 拦。
+CanReplicate(root, verb) {
+    if IsProtectedVerb(verb)
+        return false
+    for n in ["MUIVerb", "MuiVerb"] {
+        v := RegGet(HKEY_CLASSES_ROOT, root "\shell\" verb, n, MISSING)
+        if (v != MISSING && Trim(v) != "")
+            return true
+    }
+    return false
 }
 
 IndexInSeq(seq, v) {
@@ -1147,6 +1333,9 @@ RestoreOrder() {
         for verb in reps {
             try RegDelete "HKCU\" base "\" verb, HIDE_MARK
             try RegDelete "HKCU\" base "\" verb, TAKE_MARK
+            ; 删完两个标记后，如果这键本来就是我们建的影子键，它已经空了 → 一并清掉，
+            ; 否则残留的空 shell 键会让菜单多出一行没有命令的空白项。
+            PruneKey("HKCU\" base "\" verb)
         }
         try RegDelete "HKCU\" base
     }
@@ -1671,8 +1860,8 @@ BuildGui() {
     gGui.SetFont("s10 Bold", "Microsoft YaHei UI")
     gHeadBlocks := []
     hx := LIST_X + 7
-    for i, cd in [[COL_ORD_W, "顺序"], [COL_NAME_W, "菜单项"], [COL_SRC_W, "来源"]
-                , [COL_STATE_W, "状态"], [COL_POS_W, "位置"]] {
+    for i, cd in [[COL_ORD_W, "顺序"], [COL_NAME_W, "菜单项"]
+                , [COL_SRC_W, "来源"], [COL_STATE_W, "状态"]] {
         b := gGui.Add("Text", "x" hx " y" (LIST_Y + 1) " w" (cd[1] - 6) " h" HEAD_H
             " BackgroundDCE8F7 c202B3A +0x200", cd[2])
         b.OnEvent("Click", HeadClick.Bind(i))
@@ -1683,17 +1872,20 @@ BuildGui() {
 
     gList := gGui.Add("ListView", "x" (LIST_X + 1) " y" (LIST_Y + HEAD_H + 1)
         " w" (LIST_W - 2) " h" (LIST_H - 1) " -Hdr -Multi -E0x200 BackgroundFFFFFF c202B3A"
-        , ["顺序", "菜单项", "来源", "状态", "位置"])
+        , ["顺序", "菜单项", "来源", "状态"])
     gList.ModifyCol(1, COL_ORD_W), gList.ModifyCol(2, COL_NAME_W), gList.ModifyCol(3, COL_SRC_W)
-    gList.ModifyCol(4, COL_STATE_W), gList.ModifyCol(5, COL_POS_W)
+    gList.ModifyCol(4, COL_STATE_W)
     DllCall("user32\SendMessageW", "Ptr", gList.Hwnd, "UInt", 0x1036, "Ptr", 0x10000, "Ptr", 0x10000)
 
-    ; 按钮只留四件事：状态切换（一个按钮两态）、上移、下移、刷新（1.3.0 用户定案）。
+    ; 按钮只做四件事：状态切换（一个按钮两态）、上移、下移、刷新。
     ; 四个按钮同宽（1.4.0 用户要求统一格式），上移/下移是真·逐位换位，不是置顶置底。
     gToggleBtn := FlatButton(gGui, LIST_X, BTN_Y, BTN_W, BTN_H, "隐藏", (*) => ToggleSelected())
     FlatButton(gGui, LIST_X + BTN_W + BTN_GAP, BTN_Y, BTN_W, BTN_H, "上移", (*) => MoveVerb(-1))
     FlatButton(gGui, LIST_X + (BTN_W + BTN_GAP) * 2, BTN_Y, BTN_W, BTN_H, "下移", (*) => MoveVerb(1))
-    FlatButton(gGui, LIST_X + (BTN_W + BTN_GAP) * 3, BTN_Y, BTN_W, BTN_H, "刷新", (*) => RefreshItems())
+    ; 「恢复」：撤销本场景的顺序接管（删 p000N# 副本、去掉原件标记）。
+    ; 1.5.0 补——接管是写进 HKCU 的持久改动，没有退路就是个坑；第五个按钮仍与前面等宽同距。
+    FlatButton(gGui, LIST_X + (BTN_W + BTN_GAP) * 3, BTN_Y, BTN_W, BTN_H, "恢复", (*) => RestoreOrder())
+    FlatButton(gGui, LIST_X + (BTN_W + BTN_GAP) * 4, BTN_Y, BTN_W, BTN_H, "刷新", (*) => RefreshItems())
 
     ; 「隐藏不可见项」默认勾上：只看真实菜单里会出现的项。
     gCheck := FlatCheck(gGui, LIST_X + LIST_W - 140, BTN_Y, 140, BTN_H, "隐藏不可见项", gOnlyVisible)
@@ -1734,6 +1926,8 @@ if (A_Args.Length >= 3 && A_Args[1] = "--probe") {
         ProbeRestore(A_Args[3], A_Args[4])
     else if (A_Args[2] = "vals" && A_Args.Length >= 4)
         ProbeVals(A_Args[3], A_Args[4])
+    else if (A_Args[2] = "real" && A_Args.Length >= 4)
+        ProbeReal(A_Args[3], A_Args[4])
     else if (A_Args[2] = "order" && A_Args.Length >= 5)
         ProbeOrder(A_Args[3], A_Args[4], A_Args[5])
     else if (A_Args.Length >= 4 && A_Args[2] = "com")
@@ -1850,6 +2044,51 @@ ProbeVals(keyPath, outPath) {
     ExitApp(0)
 }
 
+; 真菜单探针：--probe real <路径> <结果文件>，把 IContextMenu 拿到的文字逐行写出。
+ProbeReal(path, outPath) {
+    out := ""
+    path := StrReplace(path, "/", "\")
+    try {
+        pDesktop := 0
+        hr := DllCall("shell32\SHGetDesktopFolder", "Ptr*", &pDesktop, "Int")
+        out .= "desktop hr=" hr " p=" pDesktop "`n"
+        pidl := 0, eaten := 0
+        hr2 := ComCall(3, pDesktop, "Ptr", 0, "Ptr", 0, "Str", path, "UInt*", &eaten
+            , "Ptr*", &pidl, "Ptr", 0, "Int")
+        out .= "parse hr=" hr2 " pidl=" pidl " eaten=" eaten "`n"
+        iidSF := GUIDBuf("{000214E6-0000-0000-C000-000000000046}")
+        iidCM := GUIDBuf("{000214E4-0000-0000-C000-000000000046}")
+        pParent := 0, pidlLast := 0
+        hr3 := DllCall("shell32\SHBindToParent", "Ptr", pidl, "Ptr", iidSF.Ptr
+            , "Ptr*", &pParent, "Ptr*", &pidlLast, "Int")
+        out .= "bindparent hr=" hr3 " pParent=" pParent " last=" pidlLast "`n"
+        apidl := Buffer(A_PtrSize, 0)
+        NumPut("Ptr", pidlLast, apidl, 0)
+        pcm := 0
+        hr4 := ComCall(10, pParent, "Ptr", 0, "UInt", 1, "Ptr", apidl.Ptr, "Ptr", iidCM.Ptr
+            , "Ptr", 0, "Ptr*", &pcm, "Int")
+        out .= "getuiobject hr=" hr4 " pcm=" pcm "`n"
+        hmenu := DllCall("user32\CreatePopupMenu", "Ptr")
+        q := ComCall(3, pcm, "Ptr", hmenu, "UInt", 0, "UInt", 1, "UInt", 0x7FFF, "UInt", 0, "Int")
+        out .= "query r=" q " menucount=" DllCall("user32\GetMenuItemCount", "Ptr", hmenu, "Int") "`n"
+
+        words := Map()
+        CollectMenuWords(hmenu, words)
+        out .= "words=" words.Count "`n"
+        for w, _v in words
+            out .= "[" w "]`n"
+        DllCall("user32\DestroyMenu", "Ptr", hmenu)
+    } catch as e {
+        out .= "ERR " e.Message " @ " e.Line "`n" e.Stack
+    }
+    p := Max(InStr(outPath, "\", false, -1), InStr(outPath, "/", false, -1))
+    if (p > 1)
+        try DirCreate(SubStr(outPath, 1, p - 1))
+    try FileDelete outPath
+    FileAppend out, outPath, "UTF-8"
+    ExitApp(0)
+}
+
 ; 撤销探针：--probe restore <场景key> <结果文件>
 ProbeRestore(sceneKey, outPath) {
     n := 0
@@ -1863,6 +2102,9 @@ ProbeRestore(sceneKey, outPath) {
         for verb in reps {
             try RegDelete "HKCU\" base "\" verb, HIDE_MARK
             try RegDelete "HKCU\" base "\" verb, TAKE_MARK
+            ; 删完两个标记后，如果这键本来就是我们建的影子键，它已经空了 → 一并清掉，
+            ; 否则残留的空 shell 键会让菜单多出一行没有命令的空白项。
+            PruneKey("HKCU\" base "\" verb)
         }
     }
     try FileDelete outPath
@@ -1961,13 +2203,35 @@ RunSelfTest(path) {
         , "SHGetFileInfo 类型名：拿到本地化类型名（TXT 文件）", &out, &fails)
     Chk(PosRank("top") = 1 && PosRank("default") = 2 && PosRank("bottom") = 3
         && StatusRank("show") = 1 && StatusRank("hidden") = 2 && StatusRank("syshidden") = 3
-        , "位置/状态排序档位", &out, &fails)
+        && StatusRank("absent") = 4 && StatusText("absent") = "菜单外"
+        , "位置/状态排序档位（含「菜单外」）", &out, &fails)
+    ; ── 1.5.0 接管闸门 / 真菜单白名单 ────────────────────────────────────
+    ; open 这类内建动词没有 MUIVerb，复制成 p000N#open 会让菜单直接显示键名；
+    ; pintohome 自带 MUIVerb，改名安全。这条闸门就是那次真机事故留下的。
+    Chk(!CanReplicate("Directory", "open") && !CanReplicate("Folder", "open")
+        && CanReplicate("Folder", "pintohome")
+        , "接管闸门：无 MUIVerb 的内建动词不复制，有 MUIVerb 的可以", &out, &fails)
+    Chk(NormMenuWord("授予访问权限(&G)") = "授予访问权限"
+        && NormMenuWord("7-Zip") = "7-zip"
+        && NormMenuWord("在新窗口中打开(&E)") = "在新窗口中打开"
+        && NormMenuWord("") = "", "真菜单文字归一化：去 & 与尾部加速键", &out, &fails)
+    w := Map("授予访问权限", true, "固定到“开始”", true, "打开", true)
+    Chk(RealMenuHas(w, "授予访问权限") && RealMenuHas(w, "固定到“开始”屏幕")
+        && RealMenuHas(w, "打开") && !RealMenuHas(w, "Safe360Ext")
+        && !RealMenuHas(w, "加密"), "真菜单白名单：友好名宽松匹配、菜单外的项判假", &out, &fails)
     out .= "fails=" fails "`n"
     if (pos := InStr(path, "\", false, -1) - 1) > 0
         try DirCreate(SubStr(path, 1, pos))
     try FileDelete(path)
     FileAppend(out, path, "UTF-8")
     ExitApp(fails ? 1 : 0)
+}
+
+; --open <路径>：直接以「拖入对象」场景打开，等于把该文件/文件夹拖进窗口。
+; 日常可以用「发送到 → 右键菜单整理」；自动化测试靠它，因为拖放没法合成。
+if (A_Args.Length >= 2 && A_Args[1] = "--open") {
+    gDropPath := StrReplace(A_Args[2], "/", "\")
+    gScene := 1
 }
 
 BuildGui()
