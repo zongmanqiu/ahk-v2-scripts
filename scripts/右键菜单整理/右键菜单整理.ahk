@@ -2,10 +2,10 @@
 ; @name         右键菜单整理
 ; @id           context-menu-tidy
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.3.0
-; @description  拖入文件/文件夹读出它的右键菜单，或看桌面空白/文件夹空白的菜单，逐项隐藏或调整位置，只写 HKCU 可恢复
+; @version      1.4.0
+; @description  拖入文件/文件夹读出它的右键菜单，或看桌面空白/文件夹空白的菜单，逐项隐藏、逐位调顺序，只写 HKCU 可恢复
 ; @author       邱宗满
-; @date         2026-11-17
+; @date         2026-11-18
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -44,12 +44,33 @@
 ;   · Blocked 按 CLSID 生效，一个 CLSID 可能在多个位置出现——关一次全局生效，状态列如实反映。
 ;   · AHK 的 = 不区分大小写，位置归一用 ==；嵌套函数写外层变量用 ByRef。
 ;   · 内核无 RegEnumKey：用 RegOpenKeyExW + RegEnumKeyExW，锁 KEY_WOW64_64KEY。
-;   · 宿主 MCP 的 send_input 命中不到被装饰色块包住的 ListView（K19）：写操作走 --probe 分支测。
-;   · 拖入区与导航都是 Text 色块，+0x200 才收 Click/DropFiles（K19）。
+;   · 宿主 MCP 的 send_input 命中不到被装饰色块包住的 ListView（K19）：写操作走 --probe 分支测；
+;     GUI 点击验证只能靠真实鼠标（SetCursorPos + mouse_event），合成点击会被装饰块吃掉。
+;   · 1.4.0 顺序真相（实测）：shell 按 **verb 键名的字母序** 排静态项，与 MUIVerb 显示名无关
+;     （写 0000zzA/0001zzB/0002zzC 显示名 AAA/ZZZ/MMM，菜单实际 AAA→ZZZ→MMM）；Position 只有
+;     top/bottom 两档、没有「第 N 位」。所以「逐位上移/下移」只能靠接管：把该根下静态 verb 复制成
+;     HKCU 下的 p0001#<verb> 副本（p > o，排在 open 之后），原件写 ProgrammaticAccessOnly 让位，
+;     改编号即改真实顺序。删副本 + 清标记即完全恢复。
+;   · RegDeleteTreeW/RegDeleteKeyW 的路径**不能带 HKCU\ 前缀**（传了返回 2）；AHK 的 RegDelete
+;     删不掉带值或带子键的键，删旧副本必须走这两个 Win32。
+;   · 拖入区与导航都是 Text 色块（+0x200 让文字垂直居中，Click 本身与样式位无关）。
 
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 #NoTrayIcon
+
+; GUI 事件层（按钮 Click 等）抛的异常默认被静默吞掉，表现成「点了按钮没反应」。
+; 统一落到脚本目录的 error.log，排查时不用再靠猜。
+OnError(LogRuntimeError)
+LogRuntimeError(err, mode) {
+    try {
+        dir := A_ScriptDir "\右键菜单整理"
+        DirCreate dir
+        FileAppend FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss") " | " err.Message "`n"
+            . err.File ":" err.Line " in " err.What "`n" err.Stack "`n`n", dir "\error.log", "UTF-8"
+    }
+    return 1        ; 已处理，不再弹默认的错误对话框
+}
 
 ; ── 常量 ────────────────────────────────────────────────────────────────
 HKEY_CLASSES_ROOT  := 0x80000000
@@ -61,20 +82,34 @@ REG_SZ             := 1
 MISSING            := "__ahkdeck_context_tidy_missing__"
 HIDE_MARK          := "ProgrammaticAccessOnly"
 SENDTO_CLSID       := "{7BA4C740-9E81-11CF-99D3-00AA004AE837}"
+NEW_MENU_CLSID     := "{D969A300-E7FF-11d0-A93B-00A0C90F2719}"
+LIBRARY_CLSID      := "{3dad6c5d-2167-4cae-9914-f99e41c12cfa}"
 VEL_HIDE_VALUE     := 6527944           ; 0x639bc8
 BLOCK_PATH         := "Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked"
 
-; 客户区 820×450；左侧三入口 + 拖入区，右侧四列。
+; 客户区 820×450；左侧三入口 + 拖入区，右侧五列（1.4.0 起加「顺序」）。
 WIN_W := 820, WIN_H := 450
 NAV_X := 16, NAV_W := 140, NAV_ITEM_H := 28, NAV_GAP := 4
 LIST_X := 172, LIST_Y := 16, LIST_W := 632, HEAD_H := 28, LIST_H := 334
-; 四列宽之和 = 318+60+86+150 = 614 ≤ 自绘滚动条占位后的列表内宽（630-10=620），
-; 否则列宽溢出又会冒出原生横条（K30）。末列吃下余量。
-COL_NAME_W := 318, COL_SRC_W := 60, COL_STATE_W := 86, COL_POS_W := 150
+; 五列宽之和 = 52+280+56+78+154 = 620 = 自绘滚动条占位后的列表内宽（630-10），
+; 少 1px 都会冒出原生横条（K30）。
+COL_ORD_W := 52, COL_NAME_W := 280, COL_SRC_W := 56, COL_STATE_W := 78, COL_POS_W := 154
 ; 垂直节奏（§10）：列表底 378 → BLOCK_GAP 6 → 按钮 384..414 → BLOCK_GAP 6 → 状态条 420..450 贴底。
 BTN_Y := 384, BTN_H := 30
+BTN_W := 72, BTN_GAP := 8
 STATUS_Y := 420, STATUS_H := 30
 DROP_Y := 128, DROP_H := 116
+
+; 顺序接管：把某根下的静态 verb 全部复制成 HKCU 下带 p0001# 前缀的副本，
+; 原件写隐藏标记让位。shell 按 verb 键名字母序排菜单项
+; （1.4.0 实测：显示名 AAA/ZZZ/MMM 跟着键名 0000/0001/0002 走，与显示名无关），
+; 所以改副本名前缀就能把菜单项摆到任意位置——这是 shell 里唯一能做到「逐位」的办法
+; （Position 只有 top/bottom 两档，没有第 N 位）。
+; 前缀用字母 p：'p' > 'o'，副本因此永远排在 open 之后；数字段保证组内次序。
+REPLICA_MARK := "p"
+; 接管时给「原件」额外写一个自己的标记值：原件的 ProgrammaticAccessOnly 是我们写的、
+; 不代表用户想隐藏，靠这个值把两者区分开（否则重跑一次接管，用户意图会被当成隐藏）。
+TAKE_MARK := "_AhkDeckTakenOver"
 
 ; 三种场景（交互形态）。位置根由 SceneRoots() 按对象类型展开。
 SceneDefs() => [
@@ -160,6 +195,19 @@ NormalizePos(v) {
 
 IsIndirectString(s) => (s != "" && SubStr(s, 1, 1) = "@")
 IsProtectedVerb(v) => (v = "open" || v = "edit")
+
+; 间接字符串（"@shell32.dll,-8506"）解析成当前语言的文字；解析不了回空串。
+IndirectText(raw) {
+    if (raw = "" || raw = MISSING)
+        return ""
+    if !IsIndirectString(raw)
+        return raw
+    out := Buffer(1024, 0)
+    if DllCall("shlwapi\SHLoadIndirectString", "Str", raw, "Ptr", out,
+            "UInt", 512, "Ptr", 0, "Int") = 0
+        return StrGet(out, "UTF-16")
+    return ""
+}
 
 ; 「打开」系内建动词：真实右键菜单把它们固定摆在前几行（打开 / 在新窗口中打开 / 固定到快速访问）。
 IsShellBuiltinVerb(v) => (v = "open" || v = "opennewwindow" || v = "opennewtab"
@@ -255,6 +303,16 @@ RegGet(root, path, name, default := MISSING) {
         DllCall("advapi32\RegCloseKey", "Ptr", h, "Int")
 }
 
+; 键存不存在（ShellNew 这类「有子键但没默认值」的判据）。
+KeyExists(root, path) {
+    h := 0
+    if DllCall("advapi32\RegOpenKeyExW", "Ptr", root, "Str", path, "UInt", 0,
+            "UInt", KEY_READ_64, "Ptr*", &h, "Int") != 0
+        return false
+    DllCall("advapi32\RegCloseKey", "Ptr", h, "Int")
+    return true
+}
+
 EnumSubkeys(root, path) {
     arr := []
     h := 0
@@ -275,6 +333,113 @@ EnumSubkeys(root, path) {
     } finally
         DllCall("advapi32\RegCloseKey", "Ptr", h, "Int")
     return arr
+}
+
+; 读某键的全部值（名字 → {type, data}）：递归复制副本键要用。
+; 只处理字符串与 DWORD；REG_BINARY（少见）跳过，避免把二进制串当文本写坏。
+RegEnumValues(root, path) {
+    vals := Map()
+    h := 0
+    r0 := DllCall("advapi32\RegOpenKeyExW", "Ptr", root, "Str", path, "UInt", 0
+        , "UInt", KEY_READ_64, "Ptr*", &h, "Int")
+    if (r0 != 0)
+        return vals
+    i := 0
+    Loop {
+        nbuf := Buffer(1024, 0), nlen := 512, typ := 0, sz := 0
+        r := DllCall("advapi32\RegEnumValueW", "Ptr", h, "UInt", i, "Ptr", nbuf, "UInt*", &nlen
+            , "Ptr", 0, "Ptr*", &typ, "Ptr", 0, "Ptr*", &sz, "Int")
+        ; 234 = ERROR_MORE_DATA：lpData 传空探大小时可能回这个码，属正常。
+        if (r != 0 && r != 234)
+            break
+        name := StrGet(nbuf, nlen, "UTF-16")
+        if (sz = 0) {
+            vals[name] := { type: "REG_SZ", data: "" }
+        } else {
+            buf := Buffer(sz + 8, 0)
+            nlen2 := 512
+            r2 := DllCall("advapi32\RegEnumValueW", "Ptr", h, "UInt", i, "Ptr", nbuf, "UInt*", &nlen2
+                , "Ptr", 0, "Ptr*", &typ, "Ptr", buf, "Ptr*", &sz, "Int")
+            if (r2 = 0) {
+                if (typ = REG_DWORD)
+                    vals[name] := { type: "REG_DWORD", data: NumGet(buf, 0, "UInt") }
+                else if (typ = 1 || typ = 2)
+                    vals[name] := { type: typ = 2 ? "REG_EXPAND_SZ" : "REG_SZ"
+                                  , data: StrGet(buf, sz // 2, "UTF-16") }
+            }
+        }
+        i++
+    }
+    DllCall("advapi32\RegCloseKey", "Ptr", h, "Int")
+    return vals
+}
+
+; 把一个键整棵树复制到 HKCU\dstPath（值 + 子键，深度通常只有 command 一层）。
+; skip 是要丢掉的值名（",Position," 这种逗号包裹的形式）。
+CopyKeyTree(root, srcPath, dstPath, skip := "") {
+    ; 先把目标键建出来：像 UWTSettings 这种级联项没有任何值、只有 shell 子键，
+    ; 光靠 RegWrite 写值不会创建键，校验时就当成复制失败（1.4.0 实测踩过）。
+    EnsureKey(dstPath)
+    for name, v in RegEnumValues(root, srcPath) {
+        if (skip != "" && InStr(skip, "," name ","))
+            continue
+        try {
+            if (name = "")
+                RegWrite v.data, v.type, "HKCU\" dstPath
+            else
+                RegWrite v.data, v.type, "HKCU\" dstPath, name
+        }
+    }
+    for sub in EnumSubkeys(root, srcPath)
+        CopyKeyTree(root, srcPath "\" sub, dstPath "\" sub)
+}
+
+; 建空键（含中间层）。RegWrite 只能连带建出「值所在的键」，空键得显式建。
+EnsureKey(path) {
+    h := 0
+    if DllCall("advapi32\RegCreateKeyExW", "Ptr", HKEY_CURRENT_USER, "Str", path, "UInt", 0, "Ptr", 0
+            , "UInt", 0, "UInt", 0x20006, "Ptr", 0, "Ptr*", &h, "Ptr", 0, "Int") = 0
+        DllCall("advapi32\RegCloseKey", "Ptr", h, "Int")
+}
+
+; 递归删键：AHK 的 RegDelete 删不掉「还带值或子键」的键（1.4.0 实测删完旧副本仍残留，
+; 新一轮按同号又建一份，菜单里出现重复项），逐值删又卡在默认值上。直接调 Win32：
+; RegDeleteTreeW 清空内容、RegDeleteKeyW 删键本身。
+RegDelTree(path) {
+    h := 0
+    r0 := DllCall("advapi32\RegOpenKeyExW", "Ptr", HKEY_CURRENT_USER, "Str", path, "UInt", 0
+            , "UInt", 0xF003F, "Ptr*", &h, "Int")
+    if (r0 != 0)        ; 键本来就不存在，没什么可删
+        return
+    DllCall("advapi32\RegDeleteTreeW", "Ptr", h, "Ptr", 0, "Int")
+    DllCall("advapi32\RegCloseKey", "Ptr", h, "Int")
+    DllCall("advapi32\RegDeleteKeyW", "Ptr", HKEY_CURRENT_USER, "Str", path, "Int")
+}
+
+; 副本名 #0001#cmd → 原 verb = 第二个 # 之后的部分。
+IsReplicaName(name) => RegExMatch(name, "^" REPLICA_MARK "\d{4}#") = 1
+ReplicaVerb(name) {
+    p := InStr(name, "#")
+    return p > 0 ? SubStr(name, p + 1) : ""
+}
+ReplicaName(rank, verb) => REPLICA_MARK Format("{:04}", rank) "#" verb
+ReplicaRank(name) {
+    if !IsReplicaName(name)
+        return 0
+    return Integer(SubStr(name, 2, 4))
+}
+
+; 某根下已建的副本：原 verb → 副本键名。
+ReplicaMap(root) {
+    m := Map()
+    for name in EnumSubkeys(HKEY_CURRENT_USER, "Software\Classes\" root "\shell") {
+        if !IsReplicaName(name)
+            continue
+        v := ReplicaVerb(name)
+        if (v != "")
+            m[v] := name
+    }
+    return m
 }
 
 VerbMarks(root, path, verb) {
@@ -343,31 +508,44 @@ global gDropPath := ""
 ; 只留真实右键菜单里会出现的项（state=show 且不带 Extended）：
 ; 默认开——用户要"只看到现存的项"，过滤后项数与真实菜单基本对齐。
 global gOnlyVisible := 1
+; 表头排序状态：默认按「顺序」列升序（1=顺序 2=菜单项 3=来源 4=状态 5=位置）。
+global gSortCol := 1, gSortAsc := true, gHeadBlocks := []
 
 ; ── 数据层 ──────────────────────────────────────────────────────────────
 ; 合并多个来源：同一 verb / CLSID 只出一行，roots 记下全部来源，隐藏时逐根写。
+; 某根一旦被「顺序接管」，该项的状态与位置改从副本键读（原件已被我们隐藏）。
 MakeItems(scene) {
     items := [], seenVerb := Map(), seenCom := Map(), seenComLabel := Map()
     roots := SceneRoots(scene.key, gDropPath)
     for root in roots {
+        reps := ReplicaMap(root)
         ; L1 静态 verb
         for verb in EnumSubkeys(HKEY_CLASSES_ROOT, root "\shell") {
-            effHidden := HiddenByMarks(VerbMarks(HKEY_CLASSES_ROOT, root "\shell", verb))
-            own := VerbMarks(HKEY_CURRENT_USER, "Software\Classes\" root "\shell", verb)
+            if IsReplicaName(verb)
+                continue                        ; 我们自己的副本，不是真实菜单项
+            taken := reps.Has(verb)
+            marks := taken ? VerbMarks(HKEY_CURRENT_USER, "Software\Classes\" root "\shell", reps[verb])
+                           : VerbMarks(HKEY_CLASSES_ROOT, root "\shell", verb)
+            effHidden := HiddenByMarks(marks)
+            own := taken ? marks : VerbMarks(HKEY_CURRENT_USER, "Software\Classes\" root "\shell", verb)
             state := effHidden ? (own.Has(HIDE_MARK) ? "hidden" : "syshidden") : "show"
-            pos := NormalizePos(RegGet(HKEY_CLASSES_ROOT, root "\shell\" verb, "Position", ""))
+            pos := taken ? "default"
+                          : NormalizePos(RegGet(HKEY_CLASSES_ROOT, root "\shell\" verb, "Position", ""))
+            rank := taken ? ReplicaRank(reps[verb]) : 0
             if seenVerb.Has(verb) {
                 it := items[seenVerb[verb]]
                 it.roots.Push(root)
                 it.state := MergeState(Map(it.state, 1, state, 1))
                 it.pos := MergePos(Map(it.pos, 1, pos, 1))
+                if (rank > 0 && (it.rank = 0 || rank < it.rank))
+                    it.rank := rank
                 continue
             }
             seenVerb[verb] := items.Length + 1
             ; Extended = 只在按住 Shift 时才出现，与隐藏标记一样默认不该露出来。
             ext := RegGet(HKEY_CLASSES_ROOT, root "\shell\" verb, "Extended", MISSING) != MISSING
             items.Push({ layer: "verb", key: verb, label: VerbLabel(HKEY_CLASSES_ROOT, root "\shell", verb)
-                       , state: state, pos: pos, src: "静态", roots: [root], extended: ext })
+                       , state: state, pos: pos, src: "静态", roots: [root], extended: ext, rank: rank })
         }
         ; L2 COM 扩展
         for name in EnumSubkeys(HKEY_CLASSES_ROOT, root "\shellex\ContextMenuHandlers") {
@@ -389,7 +567,7 @@ MakeItems(scene) {
             seenComLabel[ci.label] := items.Length + 1
             items.Push({ layer: "com", key: guid, name: name, label: ci.label
                        , state: ComBlockedState(guid), pos: "", keys: [guid]
-                       , src: "COM", roots: [root], shared: IsSharedClsid(guid), extended: false })
+                       , src: "COM", roots: [root], shared: IsSharedClsid(guid), extended: false, rank: 0 })
         }
     }
     ; shell 真实顺序（本机能对齐的部分）：置顶最前、置底最后，其余分两段——
@@ -398,17 +576,23 @@ MakeItems(scene) {
     ; ② 其余静态与 COM 扩展按注册枚举序。
     ; COM 项的实际先后由各 DLL 的 QueryContextMenu 插入位决定，注册表无此信息，
     ; 这部分对齐不了（HISTORY 1.3.0 记录了实测结论）。
-    top := [], builtin := [], mid := [], bot := []
+    ranked := [], top := [], builtin := [], midV := [], midC := [], bot := []
     for it in items {
-        if (it.pos = "top")
+        if (it.rank > 0)
+            ranked.Push(it)
+        else if (it.pos = "top")
             top.Push(it)
         else if (it.pos = "bottom")
             bot.Push(it)
         else if (it.layer = "verb" && IsShellBuiltinVerb(it.key))
             builtin.Push(it)
+        else if (it.layer = "verb")
+            midV.Push(it)
         else
-            mid.Push(it)
+            midC.Push(it)
     }
+    ; 接管过的项按副本名前缀排（shell 就是按 verb 键名字母序摆菜单的）。
+    ranked := SortByKey(ranked, (it) => it.rank)
     ; 「打开」必须是第一行。
     for i, it in builtin.Clone() {
         if (it.key = "open") {
@@ -417,16 +601,17 @@ MakeItems(scene) {
             break
         }
     }
+    ; 静态项整体排在 COM 扩展前面：真实菜单里也是「注册表静态项 → 各 DLL 插的扩展」，
+    ; 混着排会让「新建」这类 COM 项跑到最上面（实测桌面菜单里它排在 NVIDIA 之后）。
     out := []
-    for bucket in [top, builtin, mid, bot]
+    for bucket in [ranked, top, builtin, midV, midC, bot]
         for it in bucket
             out.Push(it)
-    ; SendTo 的子菜单项是真实存在的二级内容（数据源 = SendTo 文件夹），
-    ; 紧跟在「发送到」行后面缩进列出；其余子菜单（7-Zip / 包含到库中 / 授予访问权限）
-    ; 由 DLL 动态生成，注册表无数据源，无法列出。
+    ; 二级内容（发送到 / 新建 / 包含到库中）紧跟在父项后面缩进列出。
+    ; 其余子菜单（7-Zip / 授予访问权限 / 上传至ima）由 DLL 当场生成，注册表无数据源。
     for i, it in out.Clone() {
-        if (it.layer = "com" && it.key = SENDTO_CLSID) {
-            subs := SendToChildren()
+        subs := SubItemsFor(it)
+        if (subs.Length) {
             j := 0
             for s in subs {
                 out.InsertAt(i + 1 + j, s)
@@ -435,17 +620,43 @@ MakeItems(scene) {
             break
         }
     }
+    ; 顺序号：就是它在真实菜单里的位次（1 起）。子项不占号。
+    n := 0
+    for it in out {
+        if (it.layer = "sub")
+            it.ord := n
+        else
+            it.ord := ++n
+    }
     return out
 }
 
-; 子项（「发送到」的二级）只在父项本身可见时才有意义。
+; 稳定插入排序：菜单行数只有几十，自己排比 Array.Sort 少踩「比较函数返回值约定」的坑。
+; 比较一律走 StrCompare —— AHK 的 > 只认数字，传字符串会抛 "Expected a Number"。
+SortByKey(arr, keyFn) {
+    out := []
+    for it in arr {
+        k := keyFn(it)
+        pos := out.Length + 1
+        while (pos > 1 && StrCompare(keyFn(out[pos - 1]), k, "Logical") > 0)
+            pos--
+        out.InsertAt(pos, it)
+    }
+    return out
+}
+
+; 子项（二级内容）只在父项本身可见时才有意义。
 ParentVisible(items) {
     for it in items {
-        if (it.layer = "com" && it.key = SENDTO_CLSID)
+        if (it.layer = "com" && SubItemsFor(it).Length)
             return VisibleItem(it)
     }
     return false
 }
+
+; 二级内容的通用行：缩进四格 + 圆点，来源列写明是哪一类的子项。
+SubItem(label, src) => { layer: "sub", key: "", label: "    · " label, state: "sub"
+                       , pos: "", src: src, roots: [], extended: false }
 
 ; 只读展示：SendTo 文件夹里的每一项就是「发送到」子菜单的一项。
 SendToChildren() {
@@ -457,10 +668,80 @@ SendToChildren() {
         name := A_LoopFileName
         if (name = "desktop.ini")
             continue
-        subs.Push({ layer: "sub", key: "", label: "      · " CleanSendToName(name)
-                  , state: "sub", pos: "", src: "发送到", roots: [], extended: false })
+        subs.Push(SubItem(CleanSendToName(name), "发送到"))
     }
     return subs
+}
+
+; 「新建」子菜单：每个带 ShellNew 子键的扩展名就是一项。
+; 显示名一律走 SHGetFileInfoW 的类型名（资源管理器「类型」列同一来源），
+; 这样「文本文档 / 压缩(zipped)文件夹 / 快捷方式」都是系统自带的中文名；
+; 读注册表 ProgID 默认值会踩到软件写坏的 UTF-8 字节（实测出现「鏂囨湰鏂囨。」这种）。
+; 「文件夹」是 shell 内建、注册表里没有 ShellNew 键，这里补一条。
+NewMenuChildren() {
+    subs := [SubItem("文件夹", "新建")]
+    names := []
+    for ext in EnumSubkeys(HKEY_CLASSES_ROOT, "") {
+        if (SubStr(ext, 1, 1) != ".")
+            continue
+        if !KeyExists(HKEY_CLASSES_ROOT, ext "\ShellNew")
+            continue
+        ; ShellNewHandler 是「从新建菜单里删掉」的反向标记，不算一项。
+        if RegGet(HKEY_CLASSES_ROOT, ext "\ShellNew", "ShellNewHandler", MISSING) != MISSING
+            continue
+        nm := StripAccel(IndirectText(RegGet(HKEY_CLASSES_ROOT, ext "\ShellNew", "MenuText", "")))
+        if (nm = "")
+            nm := StripAccel(IndirectText(RegGet(HKEY_CLASSES_ROOT, ext "\ShellNew", "ItemName", "")))
+        if (nm = "")
+            nm := StripAccel(ExtTypeName(ext))
+        if (nm = "")
+            nm := SubStr(ext, 2)
+        names.Push(nm)
+    }
+    names := SortByKey(names, (v) => v)
+    for nm in names
+        subs.Push(SubItem(nm, "新建"))
+    return subs
+}
+
+; 去掉菜单加速键标记：「快捷方式(&S)」→「快捷方式」。
+StripAccel(s) => RegExReplace(s, "\s*\(&.\)$", "")
+
+; 扩展名的类型显示名：SHGetFileInfoW + SHGFI_TYPENAME + SHGFI_USEFILEATTRIBUTES，
+; 不需要文件真的存在。返回空串表示系统没登记这个类型。
+ExtTypeName(ext) {
+    size := A_PtrSize + 8 + 520 + 160
+    shfi := Buffer(size, 0)
+    if !DllCall("shell32\SHGetFileInfoW", "Str", "x" ext, "UInt", 0x80
+            , "Ptr", shfi, "UInt", size, "UInt", 0x410)
+        return ""
+    return StrGet(shfi.Ptr + A_PtrSize + 8 + 520, "UTF-16")
+}
+
+; 「包含到库中」子菜单：库目录下的 .library-ms 文件就是一项。
+LibraryChildren() {
+    subs := []
+    dir := EnvGet("APPDATA") "\Microsoft\Windows\Libraries"
+    if !DirExist(dir)
+        return subs
+    loop files, dir "\*.library-ms" {
+        nm := A_LoopFileName
+        subs.Push(SubItem(SubStr(nm, 1, StrLen(nm) - StrLen(".library-ms")), "包含到库中"))
+    }
+    return subs
+}
+
+; 一个菜单项有没有二级内容：只认注册表/文件系统里有数据源的三种。
+; 7-Zip、授予访问权限、上传至ima 这些子菜单由 DLL 当场生成，没有静态数据源，列不出来。
+SubItemsFor(it) {
+    if (it.layer != "com")
+        return []
+    switch it.key {
+        case SENDTO_CLSID:  return SendToChildren()
+        case NEW_MENU_CLSID: return NewMenuChildren()
+        case LIBRARY_CLSID: return LibraryChildren()
+    }
+    return []
 }
 
 ; 「压缩(zipped)文件夹」这类是 .ZFSendToTarget / .DeskLink / .mydocs 之类的
@@ -479,13 +760,57 @@ VisibleItem(it) {
     return it.state = "show" && !it.extended
 }
 
+StatusRank(s) => s = "show" ? 1 : s = "hidden" ? 2 : s = "syshidden" ? 3 : 0
+StatusText(s) => s = "show" ? "显示" : s = "hidden" ? "已隐藏" : s = "syshidden" ? "系统隐藏" : ""
+PosRank(p) => p = "top" ? 1 : p = "default" ? 2 : p = "bottom" ? 3 : 4
+PosText(p) => p = "top" ? "置顶" : p = "bottom" ? "置底" : "默认"
+
+; 一列的排序键统一成可比较字符串：顺序号补零后按字符串比也不会错位。
+SortKeyOf(it, col) {
+    switch col {
+        case 1: return Format("{:05}", it.ord)
+        case 2: return it.label
+        case 3: return it.src
+        case 4: return StatusRank(it.state) ""
+        case 5: return PosRank(it.pos) ""
+    }
+    return ""
+}
+
+; 组的稳定排序：二级项不单独参与比较，永远跟着父项走。
+SortGroups(groups, col, asc) {
+    keyed := []
+    for g in groups
+        keyed.Push({ g: g, k: SortKeyOf(g.it, col) })
+    out := []
+    for item in keyed {
+        pos := out.Length + 1
+        while (pos > 1) {
+            cmp := StrCompare(out[pos - 1].k, item.k, "Logical")
+            if (asc ? cmp <= 0 : cmp >= 0)
+                break
+            pos--
+        }
+        out.InsertAt(pos, item)
+    }
+    res := []
+    for o in out
+        res.Push(o.g)
+    return res
+}
+
 RefreshItems() {
-    global gList, gStatus, gItems, gScene, gScroll, gDropPath, gOnlyVisible, gToggleBtn, gRowMap
+    global gList, gStatus, gItems, gScene, gScroll, gDropPath, gOnlyVisible, gRowMap
+    global gSortCol, gSortAsc
     scene := SceneDefs()[gScene]
     gItems := MakeItems(scene)
     gList.Delete()
+    ; 重建后把视口拉回第一行：Delete/Add 之后 ListView 有时会保留旧的 top index，
+    ; 表现为「顺序」列从 4 开始、前几行看不见。
+    DllCall("user32\SendMessageW", "Ptr", gList.Hwnd, "UInt", 0x1013, "Ptr", 0, "Ptr", 0, "Ptr")
     gRowMap := []
     nVerb := 0, nCom := 0, nHide := 0, nSys := 0, nShown := 0
+    view := []
     for it in gItems {
         if (it.layer = "verb")
             nVerb++
@@ -500,17 +825,28 @@ RefreshItems() {
             continue
         if (gOnlyVisible && !VisibleItem(it))
             continue
-        if (it.layer = "sub")
-            st := ""
+        view.Push(it)
+    }
+    ; 顺序号按「实际列出来的行」连续编：Shift 才显示的 Extended 项本来就不在菜单里，
+    ; 跳过后不能留空号（否则第一行就显示 4，看着像丢了东西）。
+    k := 0
+    for it in view
+        if (it.layer != "sub")
+            it.ord := ++k
+    ; 二级项并回父项成组，再整体排序——点表头排序时缩进的子项不会飞走。
+    groups := []
+    for it in view {
+        if (it.layer = "sub" && groups.Length)
+            groups[groups.Length].subs.Push(it)
         else
-            st := it.state = "show" ? "显示" : it.state = "hidden" ? "已隐藏" : "系统隐藏"
-        if (it.layer = "sub" || it.layer = "com")
-            ps := "—"
-        else
-            ps := it.pos = "top" ? "置顶" : it.pos = "bottom" ? "置底" : "默认"
-        gList.Add("", it.label, it.src, st, ps)
-        gRowMap.Push(it)
-        nShown++
+            groups.Push({ it: it, subs: [] })
+    }
+    groups := SortGroups(groups, gSortCol, gSortAsc)
+    for g in groups {
+        AddRow(g.it)
+        for s in g.subs
+            AddRow(s)
+        nShown += 1 + g.subs.Length
     }
     scope := scene.key = "obj" ? (gDropPath != "" ? "拖入对象 · " gDropPath : "拖入对象（待拖入）")
                                : scene.name
@@ -522,13 +858,24 @@ RefreshItems() {
         gScroll.Layout()
         ; 填完后强制同步重画（RDW_INVALIDATE|RDW_ALLCHILDREN|RDW_UPDATENOW）：
         ; 拖入路径 Delete/Add 之后 ListView 不重画、整块发白，滚一下滚轮才恢复（1.2.2 实测）；
-        ; UPDATENOW 直接同步走 WM_PAINT，不等消息泵。
+        ; UPDATENOW 直接走 WM_PAINT，不等消息泵。
         DllCall("user32\RedrawWindow", "Ptr", gList.Hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x0181)
         ; 同步重画 ListView 会盖掉自绘滑块（Z 序在 ListView 之下），补画一次。
         gScroll.Paint()
     }
     ; 列表重建后没有选中项，切换按钮回默认文案。
     SyncToggleLabel()
+    SyncHeadArrows()
+}
+
+AddRow(it) {
+    global gList, gRowMap
+    st := it.layer = "sub" ? "" : StatusText(it.state)
+    ps := (it.layer = "sub" || it.layer = "com") ? "—" : PosText(it.pos)
+    ; 「顺序」只标真菜单项：二级项没有独立位置，留空（标签自带「    · 」缩进标记，
+    ; 这里再补一个点会出现「·  · 文件夹」两粒点）。
+    gList.Add("", it.layer = "sub" ? "" : it.ord, it.label, it.src, st, ps)
+    gRowMap.Push(it)
 }
 
 ; 操作对象 = 列表里的选中项（用户点一下就是它）。AHK 的 ListView.GetNext 只认
@@ -550,22 +897,36 @@ SelectedItem() {
 
 ; ── 写操作 ──────────────────────────────────────────────────────────────
 ; 静态项对每个来源根都写影子键，否则其它位置仍会把菜单项带出来。
-WriteVerbMarks(roots, verb, action, pos := "") {
+; 静态项对每个来源根都写影子键，否则其它位置仍会把菜单项带出来。
+; 已经被「顺序接管」的根：可见性写在副本上（副本才是真实菜单项），
+; 原件必须始终带着隐藏标记，否则原件和副本会各出一项。
+WriteVerbMarks(roots, verb, action) {
     errs := 0
     for root in roots {
+        reps := ReplicaMap(root)
+        if (reps.Has(verb)) {
+            key := "HKCU\Software\Classes\" root "\shell\" reps[verb]
+            try {
+                if (action = "hide")
+                    RegWrite "", "REG_SZ", key, HIDE_MARK
+                else
+                    try RegDelete key, HIDE_MARK
+            } catch
+                errs++
+            continue
+        }
         key := ShadowKey(root, verb)
         try {
-            switch action {
-                case "hide":    RegWrite "", "REG_SZ", key, HIDE_MARK
-                case "show":    try RegDelete key, HIDE_MARK
-                case "pos":     RegWrite pos, "REG_SZ", key, "Position"
-                case "default": try RegDelete key, "Position"
-            }
+            if (action = "hide")
+                RegWrite "", "REG_SZ", key, HIDE_MARK
+            else
+                try RegDelete key, HIDE_MARK
         } catch
             errs++
         ; 恢复完顺手把空壳键删掉：留着空 shell 键，shell 会多列一个没有命令的菜单项。
-        ; 键里还有别的值（比如刚写的 Position）时 RegDelete 会失败，属正常，忽略。
-        try RegDelete key
+        ; 键里还有其它值（比如刚写的 Position）时 RegDelete 会失败，属正常，忽略。
+        if (action = "show")
+            try RegDelete key
     }
     return errs
 }
@@ -579,26 +940,223 @@ ToggleSelected() {
         return
     }
     if (it.layer = "sub") {
-        gStatus.Value := "「" it.label "」是「发送到」的二级项，只读展示、不可操作"
+        gStatus.Value := "「" Trim(it.label, " ·") "」是二级项，只读展示、不可操作"
         return
     }
     SetHide(it.state = "show")
 }
 
-; 上移 = Position(top)，下移 = Position(bottom)；已在同一档再点一次 = 取消回默认。
-TogglePos(pos) {
-    global gStatus
+; 上移/下移 = 与相邻的静态项换个位次，一次只挪一位。
+; ★ shell 的 Position 只有 top/bottom 两档，没有「第 N 位」；逐位唯一可行的办法是改
+;   verb 键名——shell 按键名字母序摆菜单项（1.4.0 实测：显示名 AAA/ZZZ/MMM 跟着
+;   键名 0000/0001/0002 走）。所以把该根下静态项整组复制成 p0001#<verb> 这样的副本，
+;   原件写隐藏标记让位，改前缀号就是改真实顺序。还原 = 删副本 + 去标记。
+MoveVerb(delta) {
+    global gItems, gStatus, gScene, gDropPath
     it := SelectedItem()
     if !it {
         gStatus.Value := "先在列表里选中一个菜单项"
         return
     }
-    if (it.layer != "verb") {
-        gStatus.Value := "COM 项与二级项不支持位置调整"
+    if (it.layer = "com") {
+        gStatus.Value := "「" it.label "」是 COM 扩展，位置由它的 DLL 决定，注册表里没有可写的顺序"
         return
     }
-    SetPos(it.pos = pos ? "default" : pos)
+    if (it.layer = "sub") {
+        gStatus.Value := "「" Trim(it.label, " ·") "」是二级项，只读展示、不可调位置"
+        return
+    }
+    if IsProtectedVerb(it.key) {
+        gStatus.Value := "「" it.label "」是打开/编辑动词，本脚本不动它"
+        return
+    }
+    idx := 0
+    for i, x in gItems {
+        ; 对象比较必须用 ObjPtr：AHK 的 = 是字符串比较，传对象会抛异常，
+        ; 异常被 GUI 事件层吞掉，表现成「点了按钮没反应」（1.3.0/1.4.0 各踩一次）。
+        if (ObjPtr(x) = ObjPtr(it)) {
+            idx := i
+            break
+        }
+    }
+    if !idx {
+        gStatus.Value := "找不到这一项，先点「刷新」"
+        return
+    }
+    j := idx
+    loop {
+        j += delta
+        if (j < 1 || j > gItems.Length) {
+            gStatus.Value := "「" it.label "」已经是" (delta < 0 ? "第一" : "最后") "个可调的静态项了"
+            return
+        }
+        if (gItems[j].layer = "verb")
+            break
+    }
+    other := gItems[j]
+    if IsProtectedVerb(other.key) {
+        gStatus.Value := "不能再往" (delta < 0 ? "上" : "下") "，「" other.label "」是系统固定项"
+        return
+    }
+    gItems[idx] := other
+    gItems[j] := it
+    if (bad := ApplyVerbOrder(SceneRoots(SceneDefs()[gScene].key, gDropPath))) {
+        gStatus.Value := "有 " bad " 处顺序写入失败（可能需管理员权限），已回滚"
+        RefreshItems()
+        return
+    }
+    gStatus.Value := "「" it.label "」已" (delta < 0 ? "上移" : "下移") "一位 · 重开右键菜单可见"
+    NotifyAssocChanged()
+    RefreshItems()
+    SelectByKey(it.key)
 }
+
+; 刷新后重新选中同一项，方便连点上下移。
+SelectByKey(verb) {
+    global gList, gRowMap
+    for i, it in gRowMap {
+        if (it.layer = "verb" && it.key = verb) {
+            gList.Modify(i, "Select Focus")
+            return
+        }
+    }
+}
+
+; 把 gItems 里的 verb 次序写成每个根的副本序（带校验，失败不留半成品）。
+ApplyVerbOrder(roots) {
+    global gItems
+    order := []
+    for it in gItems
+        if (it.layer = "verb" && !IsProtectedVerb(it.key))
+            order.Push(it.key)
+    bad := 0
+    for root in roots {
+        all := []
+        for v in EnumSubkeys(HKEY_CLASSES_ROOT, root "\shell")
+            if !IsReplicaName(v)
+                all.Push(v)
+        seq := []
+        for v in all
+            if IsProtectedVerb(v)
+                seq.Push(v)
+        for v in order
+            for w in all
+                if (w = v)
+                    seq.Push(w)
+        for v in all
+            if !InList(seq, v)
+                seq.Push(v)
+        if !RebuildRoot(root, seq)
+            bad++
+    }
+    return bad
+}
+
+InList(arr, v) {
+    for x in arr
+        if (x = v)
+            return true
+    return false
+}
+
+; 重建一个根的顺序：先记下旧的「用户隐藏」意图 → 删旧副本 → 按 seq 建新副本 → 回写隐藏 → 隐藏原件。
+; 任一步失败就清掉已建副本并返回 false（宁可保持原状，也不留半套让菜单重复/失效）。
+RebuildRoot(root, seq) {
+    base := "Software\Classes\" root "\shell"
+    ; 1) 收集当前的隐藏意图：已经接管过就看旧副本，首次接管就看原件上的用户标记。
+    wasHidden := Map()
+    for name in EnumSubkeys(HKEY_CURRENT_USER, base) {
+        if !IsReplicaName(name)
+            continue
+        if RegGet(HKEY_CURRENT_USER, base "\" name, HIDE_MARK, MISSING) != MISSING
+            wasHidden[ReplicaVerb(name)] := true
+    }
+    for verb in seq {
+        if wasHidden.Has(verb)
+            continue
+        p := base "\" verb
+        ; 原件上已经有我们的接管标记 → 那儿的 ProgrammaticAccessOnly 是我们写的，不是用户意图。
+        if RegGet(HKEY_CURRENT_USER, p, TAKE_MARK, MISSING) != MISSING
+            continue
+        if RegGet(HKEY_CURRENT_USER, p, HIDE_MARK, MISSING) != MISSING
+            wasHidden[verb] := true
+    }
+    ; 2) 清旧副本
+    for name in EnumSubkeys(HKEY_CURRENT_USER, base)
+        if IsReplicaName(name)
+            RegDelTree(base "\" name)
+    ; 3) 按目标顺序建副本
+    made := []
+    n := 0
+    for verb in seq {
+        n++
+        dst := base "\" ReplicaName(n, verb)
+        try CopyKeyTree(HKEY_CLASSES_ROOT, root "\shell\" verb, dst, CopySkip(root, verb))
+        if !KeyExists(HKEY_CURRENT_USER, dst) {    ; 单个 verb 复制失败 → 整批回滚
+            for m in made
+                RegDelTree(base "\" m)
+            return false
+        }
+        made.Push(ReplicaName(n, verb))
+    }
+    ; 4) 把旧意图写回新副本
+    for verb in seq {
+        if wasHidden.Has(verb)
+            try RegWrite "", "REG_SZ", "HKCU\" base "\" ReplicaName(IndexInSeq(seq, verb), verb), HIDE_MARK
+    }
+    ; 5) 原件让位：始终带隐藏标记，菜单里只留副本
+    for verb in seq {
+        try {
+            RegWrite "", "REG_SZ", "HKCU\" base "\" verb, HIDE_MARK
+            RegWrite "1", "REG_SZ", "HKCU\" base "\" verb, TAKE_MARK
+        }
+    }
+    return true
+}
+
+IndexInSeq(seq, v) {
+    for i, x in seq
+        if (x = v)
+            return i
+    return 0
+}
+
+; 复制副本时要丢掉的值：Position 一律不要（顺序改由前缀号决定，留着会被拽回 top/bottom）；
+; ProgrammaticAccessOnly / LegacyDisable 只有当 HKLM 原件自己有才保留（那是系统级隐藏），
+; HKLM 没有就说明是脚本自己写的，不能继承过去，否则副本一出生就看不见。
+CopySkip(root, verb) {
+    hklm := "Software\Classes\" root "\shell\" verb
+    skip := ",Position,"
+    for n in [HIDE_MARK, "LegacyDisable"]
+        if RegGet(HKEY_LOCAL_MACHINE, hklm, n, MISSING) = MISSING
+            skip .= n ","
+    return skip
+}
+
+; 撤销当前场景的顺序接管：删掉全部副本、去掉原件上的隐藏标记，菜单回到系统默认次序。
+RestoreOrder() {
+    global gDropPath, gScene, gStatus
+    n := 0
+    for root in SceneRoots(SceneDefs()[gScene].key, gDropPath) {
+        base := "Software\Classes\" root "\shell"
+        reps := ReplicaMap(root)
+        for verb, name in reps {
+            RegDelTree(base "\" name)
+            n++
+        }
+        for verb in reps {
+            try RegDelete "HKCU\" base "\" verb, HIDE_MARK
+            try RegDelete "HKCU\" base "\" verb, TAKE_MARK
+        }
+        try RegDelete "HKCU\" base
+    }
+    NotifyAssocChanged()
+    RefreshItems()
+    gStatus.Value := n ? "已撤销顺序接管（清除 " n " 个副本），菜单回到系统默认次序"
+                    : "当前场景没有被接管的顺序"
+}
+
+
 
 SetOnlyVisible(on) {
     global gOnlyVisible
@@ -671,32 +1229,6 @@ SetHide(on) {
     RefreshItems()
 }
 
-SetPos(pos) {
-    global gStatus
-    it := SelectedItem()
-    if !it {
-        gStatus.Value := "先在列表里选中一个菜单项"
-        return
-    }
-    if (it.layer = "com") {
-        gStatus.Value := "COM 扩展由 DLL 动态绘制，不支持置顶/置底"
-        return
-    }
-    if IsProtectedVerb(it.key) {
-        gStatus.Value := "「" it.key "」是打开动词，本脚本不改动它"
-        return
-    }
-    errs := WriteVerbMarks(it.roots, it.key, pos = "default" ? "default" : "pos", pos)
-    if errs {
-        gStatus.Value := "有 " errs " 处调整失败（可能需管理员权限）"
-        return
-    }
-    posName := pos = "top" ? "置顶" : pos = "bottom" ? "置底" : "默认"
-    gStatus.Value := "「" it.label "」位置已设为" posName " · " it.roots.Length " 处来源"
-    NotifyAssocChanged()
-    RefreshItems()
-}
-
 ; ── 自绘滚动条 ──────────────────────────────────────────────────────────
 ; 整段复用《文件解锁》1.3.1 /《硬件信息》2.3.4 的 class FlatScroll（只竖轴）。
 ; 原生条由 comctl32 主题引擎绘制，脚本拿不到颜色；ShowScrollBar(FALSE) 只是「按需隐藏」，
@@ -711,7 +1243,7 @@ class FlatCheck {
         boxY := y + (h - 16) // 2
         ; 同 FlatButton：16x16 描边框先建、14x14 填充块后建（Z 序在上，✓ 才看得见），
         ; 两块都挂 Click（宿主命中按创建序，先中的是框）。
-        this.frame := g.Add("Text", "x" x " y" boxY " w16 h16 BackgroundB7C8E0")
+        this.frame := g.Add("Text", "x" x " y" boxY " w16 h16 BackgroundB7C8E0 +0x200")
         this.fill := g.Add("Text", "x" (x + 1) " y" (boxY + 1) " w14 h14 +0x200 Center", "")
         this.fill.SetFont("s11 Bold", "Microsoft YaHei UI")
         this.label := g.Add("Text", "x" (x + 22) " y" y " w" (w - 22) " h" h
@@ -745,24 +1277,27 @@ class FlatScroll {
     __New(g, lv, x, y, w, h, t := 10) {
         this.g := g, this.lv := lv
         this.x := x, this.y := y, this.w := w, this.h := h, this.t := t
-        this.tn := Max(3, t - 6), this.off := (t - this.tn) // 2
+        ; 滑块占满轨道宽度留 1px 边，视觉上是一条完整的蓝条。
+        ; 1.3.x 是「轨道拆前后两段 + 中间 4px 细条」，重绘时中间会露出一截底色，
+        ; 看起来像滑块断成两截。改成「整条轨道 + 压在它上面的一整块滑块」，只有两块控件。
+        this.tn := Max(4, t - 2), this.off := (t - this.tn) // 2
         this.pad := 2
         this.lvW := 0, this.lvH := 0, this.itemH := 23
         this.exV := false, this.dead := false
         this.lastV := -1, this.lastCount := -1
         this.rows := 0, this.viewRows := 1, this.top := 0, this.maxTop := 0
         this.ops := [], this.dragging := false
+        ; SetTimer 按 FuncObj 身份认定时器：绑一次全程复用，否则关不掉、越叠越多。
         this.fnTick := ObjBindMethod(this, "DragTick")
         this.fnSync := ObjBindMethod(this, "Sync")
-        ; +0x100 = SS_NOTIFY：否则静态控件命中测试透明，点击穿透（K19）。
-        this.vUp := g.Add("Text", "x" x " y" y " w0 h0 +0x100 BackgroundDCE8F7")
-        this.vDn := g.Add("Text", "x" x " y" y " w0 h0 +0x100 BackgroundDCE8F7")
-        this.vGapL := g.Add("Text", "x" x " y" y " w0 h0 +0x100 BackgroundDCE8F7")
-        this.vGapR := g.Add("Text", "x" x " y" y " w0 h0 +0x100 BackgroundDCE8F7")
-        this.thumbV := g.Add("Text", "x" x " y" y " w0 h0 +0x100 Background6E9BD4")
-        for c in [this.vUp, this.vDn, this.vGapL, this.vGapR, this.thumbV]
+        ; +0x100 = SS_NOTIFY：给静态控件发通知，按住拖动时宿主才会派发鼠标消息。
+        this.track := g.Add("Text", "x" x " y" y " w0 h0 +0x100 BackgroundDCE8F7")
+        this.thumb := g.Add("Text", "x" x " y" y " w0 h0 +0x100 Background6E9BD4")
+        for c in [this.track, this.thumb]
             c.Visible := false
     }
+
+    ; 内容超出才占位，与原生一致；最多三轮收敛。
     Layout() {
         if (!this.lv.Hwnd)
             return
@@ -775,6 +1310,7 @@ class FlatScroll {
             this.lv.Move(this.x, this.y, w, this.h)
             this.lvW := w, this.lvH := this.h
         }
+        ; 循环最后一步是 Move（会把原生条样式位置回），收尾必须再清一次。
         this.HideNative()
         if (this.lv.GetCount() > 0 && this.lvH > 0) {
             rc := Buffer(16, 0)
@@ -786,6 +1322,8 @@ class FlatScroll {
         this.Repaint()
         this.Paint()
     }
+
+    ; 逐块 SetWindowPos：实测批量提交在「列表刚 Move 完」那拍会整批失败返回 NULL。
     Put(c, on, x, y, w, h) {
         this.ops.Push({ c: c.Hwnd, on: on && w > 0 && h > 0, x: x, y: y, w: w, h: h })
     }
@@ -803,6 +1341,8 @@ class FlatScroll {
     TrackLen() {
         return this.lvH - this.pad * 2
     }
+    ; 轨道整条画、滑块后画（Z 序后建在上，滑块一定盖住轨道）。
+    ; 两块几何上永远嵌套、没有中缝，也就不会「断开」。
     Paint() {
         t := this.t, tn := this.tn, off := this.off, pd := this.pad
         this.ops := []
@@ -810,15 +1350,11 @@ class FlatScroll {
             g := this.Geo(this.TrackLen())
             bx := this.x + this.lvW
             a := this.y + pd + g.start
-            b := a + g.len
-            this.Put(this.vUp, true, bx, this.y, t, pd + g.start)
-            this.Put(this.vDn, true, bx, b, t, this.y + this.lvH - b)
-            this.Put(this.vGapL, true, bx, a, off, g.len)
-            this.Put(this.vGapR, true, bx + off + tn, a, t - off - tn, g.len)
-            this.Put(this.thumbV, true, bx + off, a, tn, g.len)
+            this.Put(this.track, true, bx, this.y, t, this.lvH)
+            this.Put(this.thumb, true, bx + off, a, tn, g.len)
         } else {
-            for c in [this.vUp, this.vDn, this.vGapL, this.vGapR, this.thumbV]
-                this.Put(c, false, 0, 0, 0, 0)
+            this.Put(this.track, false, 0, 0, 0, 0)
+            this.Put(this.thumb, false, 0, 0, 0, 0)
         }
         this.Flush()
     }
@@ -844,6 +1380,7 @@ class FlatScroll {
     ReadTop() {
         return DllCall("user32\SendMessageW", "Ptr", this.lv.Hwnd, "UInt", 0x1027, "Ptr", 0, "Ptr", 0, "Ptr")
     }
+    ; LVM_SCROLL 按像素滚并自己夹住范围；滚前滚后各压一次原生条（K22）。
     ScrollToRow(target) {
         if (!this.lv.Hwnd)
             return
@@ -860,6 +1397,7 @@ class FlatScroll {
         this.Repaint()
         this.Paint()
     }
+    ; 不带 RDW_ERASE —— 带 ERASE 每次滚轮都会先擦成父底色再画，闪一下白（K44）。
     Repaint() {
         if (this.lv.Hwnd)
             DllCall("user32\RedrawWindow", "Ptr", this.lv.Hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x0101)
@@ -895,18 +1433,32 @@ class FlatScroll {
         frac := (this.maxTop > 0) ? this.top / this.maxTop : 0
         return { len: len, start: Round(frac * span), span: span }
     }
+    ; 只有两块控件，命中一定是轨道（先建先中）：落在滑块范围里就拖，否则按页跳。
     OnDown(hwnd) {
-        if (hwnd = this.thumbV.Hwnd || hwnd = this.vGapL.Hwnd || hwnd = this.vGapR.Hwnd)
+        if (hwnd != this.track.Hwnd && hwnd != this.thumb.Hwnd)
+            return
+        if (!this.exV)
+            return
+        if this.CursorInThumb()
             this.BeginDrag()
-        else if (hwnd = this.vUp.Hwnd || hwnd = this.vDn.Hwnd)
+        else
             this.PageJump()
+    }
+    CursorInThumb() {
+        pt := Buffer(8, 0)
+        DllCall("user32\GetCursorPos", "Ptr", pt)
+        c := NumGet(pt, 4, "Int")
+        r := Buffer(16, 0)
+        if !DllCall("user32\GetWindowRect", "Ptr", this.thumb.Hwnd, "Ptr", r)
+            return false
+        return (c >= NumGet(r, 4, "Int") && c < NumGet(r, 12, "Int"))
     }
     PageJump() {
         pt := Buffer(8, 0)
         DllCall("user32\GetCursorPos", "Ptr", pt)
         c := NumGet(pt, 4, "Int")
         r := Buffer(16, 0)
-        DllCall("user32\GetWindowRect", "Ptr", this.thumbV.Hwnd, "Ptr", r)
+        DllCall("user32\GetWindowRect", "Ptr", this.thumb.Hwnd, "Ptr", r)
         a := NumGet(r, 4, "Int"), b := NumGet(r, 12, "Int")
         dir := (c < a) ? -1 : 1
         this.ScrollRows(dir * this.viewRows)
@@ -919,7 +1471,7 @@ class FlatScroll {
         DllCall("user32\GetCursorPos", "Ptr", pt)
         this.dragging := true, this.gBase := g, this.pBase := this.top
         this.cBase := NumGet(pt, 4, "Int")
-        DllCall("user32\SetCapture", "Ptr", this.thumbV.Hwnd)
+        DllCall("user32\SetCapture", "Ptr", this.thumb.Hwnd)
         SetTimer(this.fnTick, 20)
     }
     DragTick() {
@@ -959,6 +1511,7 @@ class FlatScroll {
             }
         }
     }
+    ; 关窗前先 Stop，否则定时器下一拍访问已销毁控件（K21）。
     Stop() {
         if (this.dead)
             return
@@ -1017,7 +1570,9 @@ PaintCaption() {
 ;   · 宿主命中（RealChildWindowFromPoint）按创建序（先建者先中）→ 点到的是 f，
 ;     所以 f 也得挂 Click，两个控件都接回调才稳妥。
 FlatButton(g, x, y, w, h, text, cb, fill := "EBF2FB", edge := "B7C8E0") {
-    f := g.Add("Text", "x" x " y" y " w" w " h" h " Background" edge)
+    ; 描边框必须也挂 Click：宿主命中按创建序先中框，框不挂事件就等于这块点不动（1.3.0 实测）。
+    ; Static 不往父窗口发点击通知，表现就是「按钮点了完全没反应」（1.4.0 实测）。
+    f := g.Add("Text", "x" x " y" y " w" w " h" h " Background" edge " +0x200")
     b := g.Add("Text", "x" (x + 1) " y" (y + 1) " w" (w - 2) " h" (h - 2)
         " Background" fill " c202B3A +0x200 Center", text)
     f.OnEvent("Click", (*) => cb())
@@ -1026,11 +1581,39 @@ FlatButton(g, x, y, w, h, text, cb, fill := "EBF2FB", edge := "B7C8E0") {
 }
 
 NavClick(i, *) {
-    global gNavBtns, gScene
+    global gNavBtns, gScene, gStatus
     gScene := i
     for j, b in gNavBtns
         b.Opt("Background" (j = i ? "EBF2FB" : "F7F9FC"))
+    try
+        RefreshItems()
+    catch as e {
+        gStatus.Value := "刷新失败 · " e.Message "（第 " e.Line " 行）"
+    }
+}
+
+; 点表头：同列再点一次反向，换列则按新列升序。1=顺序 2=菜单项 3=来源 4=状态 5=位置。
+HeadClick(col, *) {
+    global gSortCol, gSortAsc
+    if (gSortCol = col)
+        gSortAsc := !gSortAsc
+    else
+        gSortCol := col, gSortAsc := true
     RefreshItems()
+}
+
+; 只在当前排序列的名字后面挂箭头，其余列保持原名。
+SyncHeadArrows() {
+    global gHeadBlocks, gSortCol, gSortAsc
+    for i, h in gHeadBlocks {
+        if (h.ctrl.Value != h.title && i != gSortCol)
+            h.ctrl.Value := h.title
+        if (i = gSortCol) {
+            txt := h.title "  " (gSortAsc ? "↑" : "↓")
+            if (h.ctrl.Value != txt)
+                h.ctrl.Value := txt
+        }
+    }
 }
 
 OnDropFiles(guiObj, ctrlObj, files, x, y) {
@@ -1045,7 +1628,7 @@ OnDropFiles(guiObj, ctrlObj, files, x, y) {
 }
 
 BuildGui() {
-    global gGui, gList, gStatus, gNavBtns, gScroll, gToggleBtn, gCheck
+    global gGui, gList, gStatus, gNavBtns, gScroll, gToggleBtn, gCheck, gHeadBlocks
     gGui := Gui("", "右键菜单整理")
     gGui.BackColor := "F7F9FC"
     gGui.SetFont("s10", "Microsoft YaHei UI")
@@ -1062,7 +1645,7 @@ BuildGui() {
         y += NAV_ITEM_H + NAV_GAP
     }
 
-    ; 拖入区：白底 + 1px 框 + 居中提示（Text 色块 +0x200 才收 DropFiles）。
+    ; 拖入区：白底 + 1px 框 + 居中提示（Text 色块，DropFiles 由父窗口转发）。
     gGui.Add("Text", "x" NAV_X " y" DROP_Y " w" NAV_W " h" DROP_H " BackgroundFFFFFF")
     gGui.Add("Text", "x" NAV_X " y" DROP_Y " w" NAV_W " h1 BackgroundB7C8E0 +0x200")
     gGui.Add("Text", "x" NAV_X " y" (DROP_Y + DROP_H - 1) " w" NAV_W " h1 BackgroundB7C8E0 +0x200")
@@ -1073,7 +1656,7 @@ BuildGui() {
     gGui.Add("Text", "x" (NAV_X + 6) " y" (DROP_Y + 64) " w" (NAV_W - 12) " h20"
         " BackgroundFFFFFF c202B3A +0x200 Center", "拖到这里")
 
-    ; 列表区：四边线 + 表头背景块。装饰块一律 -0x100（去 SS_NOTIFY 让命中穿透，K19）。
+    ; 列表区：四边线 + 表头背景块。装饰块一律不挂事件、且 -0x100 去 SS_NOTIFY。
     ; 注意：1.2.2 曾在这里铺一块 BackgroundFFFFFF 白底大块——AHK 的控件 Z 序与创建序
     ; 相反，后建的 ListView 反而在它之下，实测这块白底把整个列表的鼠标点击全吃掉
     ; （点行选不中）且拖入刷新后重绘盖白整块列表；它几何上被表头块+ListView 完全
@@ -1083,38 +1666,37 @@ BuildGui() {
     gGui.Add("Text", "x" LIST_X " y" LIST_Y " w1 h" (HEAD_H + LIST_H + 1) " BackgroundB7C8E0 -0x100")
     gGui.Add("Text", "x" (LIST_X + LIST_W - 1) " y" LIST_Y " w1 h" (HEAD_H + LIST_H + 1) " BackgroundB7C8E0 -0x100")
     gGui.Add("Text", "x" (LIST_X + 1) " y" (LIST_Y + 1) " w" (LIST_W - 2) " h" HEAD_H " BackgroundDCE8F7 -0x100")
+    ; 表头本身是按钮：点一列按这列排，再点一次反向；列名后跟 ↑/↓ 指明当前排序列。
+    ; 默认按「顺序」升序（1.4.0 用户定案），即脚本推断的真实菜单次序。
     gGui.SetFont("s10 Bold", "Microsoft YaHei UI")
+    gHeadBlocks := []
     hx := LIST_X + 7
-    gGui.Add("Text", "x" hx " y" (LIST_Y + 1) " w" (COL_NAME_W - 6) " h" HEAD_H
-        " BackgroundDCE8F7 c202B3A +0x200", "菜单项")
-    hx += COL_NAME_W
-    gGui.Add("Text", "x" hx " y" (LIST_Y + 1) " w" (COL_SRC_W - 6) " h" HEAD_H
-        " BackgroundDCE8F7 c202B3A +0x200", "来源")
-    hx += COL_SRC_W
-    gGui.Add("Text", "x" hx " y" (LIST_Y + 1) " w" (COL_STATE_W - 6) " h" HEAD_H
-        " BackgroundDCE8F7 c202B3A +0x200", "状态")
-    hx += COL_STATE_W
-    gGui.Add("Text", "x" hx " y" (LIST_Y + 1) " w" (COL_POS_W - 6) " h" HEAD_H
-        " BackgroundDCE8F7 c202B3A +0x200", "位置")
+    for i, cd in [[COL_ORD_W, "顺序"], [COL_NAME_W, "菜单项"], [COL_SRC_W, "来源"]
+                , [COL_STATE_W, "状态"], [COL_POS_W, "位置"]] {
+        b := gGui.Add("Text", "x" hx " y" (LIST_Y + 1) " w" (cd[1] - 6) " h" HEAD_H
+            " BackgroundDCE8F7 c202B3A +0x200", cd[2])
+        b.OnEvent("Click", HeadClick.Bind(i))
+        gHeadBlocks.Push({ ctrl: b, title: cd[2] })
+        hx += cd[1]
+    }
     gGui.SetFont("s10 Norm", "Microsoft YaHei UI")
 
     gList := gGui.Add("ListView", "x" (LIST_X + 1) " y" (LIST_Y + HEAD_H + 1)
         " w" (LIST_W - 2) " h" (LIST_H - 1) " -Hdr -Multi -E0x200 BackgroundFFFFFF c202B3A"
-        , ["菜单项", "来源", "状态", "位置"])
-    gList.ModifyCol(1, COL_NAME_W), gList.ModifyCol(2, COL_SRC_W), gList.ModifyCol(3, COL_STATE_W)
-    gList.ModifyCol(4, COL_POS_W)
+        , ["顺序", "菜单项", "来源", "状态", "位置"])
+    gList.ModifyCol(1, COL_ORD_W), gList.ModifyCol(2, COL_NAME_W), gList.ModifyCol(3, COL_SRC_W)
+    gList.ModifyCol(4, COL_STATE_W), gList.ModifyCol(5, COL_POS_W)
     DllCall("user32\SendMessageW", "Ptr", gList.Hwnd, "UInt", 0x1036, "Ptr", 0x10000, "Ptr", 0x10000)
 
     ; 按钮只留四件事：状态切换（一个按钮两态）、上移、下移、刷新（1.3.0 用户定案）。
-    ; 「上移/下移」写的是 shell 的 Position=top/bottom 两档；已是该档再点一次就取消回默认，
-    ; 这样不需要单独的「恢复位置」按钮。
-    gToggleBtn := FlatButton(gGui, 172, BTN_Y, 88, BTN_H, "隐藏", (*) => ToggleSelected())
-    FlatButton(gGui, 268, BTN_Y, 64, BTN_H, "上移", (*) => TogglePos("top"))
-    FlatButton(gGui, 340, BTN_Y, 64, BTN_H, "下移", (*) => TogglePos("bottom"))
-    FlatButton(gGui, 600, BTN_Y, 64, BTN_H, "刷新", (*) => RefreshItems())
+    ; 四个按钮同宽（1.4.0 用户要求统一格式），上移/下移是真·逐位换位，不是置顶置底。
+    gToggleBtn := FlatButton(gGui, LIST_X, BTN_Y, BTN_W, BTN_H, "隐藏", (*) => ToggleSelected())
+    FlatButton(gGui, LIST_X + BTN_W + BTN_GAP, BTN_Y, BTN_W, BTN_H, "上移", (*) => MoveVerb(-1))
+    FlatButton(gGui, LIST_X + (BTN_W + BTN_GAP) * 2, BTN_Y, BTN_W, BTN_H, "下移", (*) => MoveVerb(1))
+    FlatButton(gGui, LIST_X + (BTN_W + BTN_GAP) * 3, BTN_Y, BTN_W, BTN_H, "刷新", (*) => RefreshItems())
 
     ; 「隐藏不可见项」默认勾上：只看真实菜单里会出现的项。
-    gCheck := FlatCheck(gGui, 676, BTN_Y, 128, BTN_H, "隐藏不可见项", gOnlyVisible)
+    gCheck := FlatCheck(gGui, LIST_X + LIST_W - 140, BTN_Y, 140, BTN_H, "隐藏不可见项", gOnlyVisible)
     gCheck.OnEvent("Click", (*) => SetOnlyVisible(gCheck.Value))
     gList.OnEvent("ItemFocus", (*) => SyncToggleLabel())
 
@@ -1148,6 +1730,12 @@ if (A_Args.Length >= 3 && A_Args[1] = "--probe") {
         ProbeItems(A_Args[3], A_Args.Length >= 5 ? A_Args[5] : "", A_Args[4])
     else if (A_Args.Length >= 4 && A_Args[2] = "verb" && A_Args.Length >= 5)
         ProbeVerb(A_Args[3], A_Args[4], A_Args[5])
+    else if (A_Args[2] = "restore" && A_Args.Length >= 4)
+        ProbeRestore(A_Args[3], A_Args[4])
+    else if (A_Args[2] = "vals" && A_Args.Length >= 4)
+        ProbeVals(A_Args[3], A_Args[4])
+    else if (A_Args[2] = "order" && A_Args.Length >= 5)
+        ProbeOrder(A_Args[3], A_Args[4], A_Args[5])
     else if (A_Args.Length >= 4 && A_Args[2] = "com")
         ProbeCom(A_Args[3], A_Args[4])
     else
@@ -1160,7 +1748,13 @@ if (A_Args.Length >= 3 && A_Args[1] = "--probe") {
 ProbeItems(sceneKey, dropPath, outPath) {
     global gDropPath
     gDropPath := dropPath
-    items := MakeItems({ key: sceneKey })
+    try
+        items := MakeItems({ key: sceneKey })
+    catch as e {
+        try FileDelete outPath
+        FileAppend "ERR " e.Message " @ line " e.Line "`n" e.Stack, outPath, "UTF-8"
+        ExitApp(3)
+    }
     out := ""
     for it in items {
         vis := VisibleItem(it) ? "1" : "0"
@@ -1175,9 +1769,21 @@ ProbeItems(sceneKey, dropPath, outPath) {
     ExitApp(0)
 }
 
+; 探针：hide/show 走正式写函数；top/bottom/default 只写 HKCU 原件的 Position
+; （1.4.0 起界面不再用 Position，留着这条只为回归验证 shell 认 Position 这一事实）。
 ProbeVerb(root, verb, action) {
-    errs := WriteVerbMarks([root], verb, action = "hide" ? "hide" : action = "show" ? "show"
-        : action = "default" ? "default" : "pos", action = "top" || action = "bottom" ? action : "")
+    errs := 0
+    if (action = "hide" || action = "show") {
+        errs := WriteVerbMarks([root], verb, action)
+    } else {
+        try {
+            if (action = "default")
+                RegDelete "HKCU\Software\Classes\" root "\shell\" verb, "Position"
+            else
+                RegWrite action, "REG_SZ", "HKCU\Software\Classes\" root "\shell\" verb, "Position"
+        } catch
+            errs := 1
+    }
     NotifyAssocChanged()
     if errs
         ExitApp(1)
@@ -1190,6 +1796,78 @@ ProbeCom(guid, action) {
         default: throw ValueError("未知 probe 动作: " action)
     }
     NotifyAssocChanged()
+}
+
+; 顺序接管探针：--probe order <场景key> <结果文件> <verb1,verb2,...>
+; 按给定顺序把该场景的静态项写成副本，输出每个根下的副本名与原件隐藏标记。
+ProbeOrder(sceneKey, outPath, list) {
+    global gItems, gDropPath
+    gDropPath := ""
+    items := MakeItems({ key: sceneKey })
+    want := StrSplit(list, ",")
+    reordered := []
+    for v in want
+        for it in items
+            if (it.layer = "verb" && it.key = v)
+                reordered.Push(it)
+    for it in items
+        if !(it.layer = "verb" && InList(want, it.key))
+            reordered.Push(it)
+    gItems := reordered
+    roots := SceneRoots(sceneKey, "")
+    bad := ApplyVerbOrder(roots)
+    out := "bad=" bad "`n"
+    for root in roots {
+        for name in EnumSubkeys(HKEY_CURRENT_USER, "Software\Classes\" root "\shell") {
+            if !IsReplicaName(name)
+                continue
+            out .= root " => " name "`n"
+        }
+        for verb in want
+            out .= root " hide " verb " = "
+                . RegGet(HKEY_CURRENT_USER, "Software\Classes\" root "\shell\" verb, HIDE_MARK, "-") "`n"
+    }
+    p := Max(InStr(outPath, "\", false, -1), InStr(outPath, "/", false, -1))
+    if (p > 1)
+        try DirCreate(SubStr(outPath, 1, p - 1))
+    try FileDelete outPath
+    FileAppend out, outPath, "UTF-8"
+    ExitApp(0)
+}
+
+; 值枚举探针：--probe vals <HKCR 下的键路径> <结果文件>
+ProbeVals(keyPath, outPath) {
+    keyPath := StrReplace(keyPath, "/", "\")
+    m := RegEnumValues(HKEY_CLASSES_ROOT, keyPath)
+    out := "count=" m.Count "`n"
+    for n, v in m
+        out .= "[" n "] " v.type " = " v.data "`n"
+    p := Max(InStr(outPath, "\", false, -1), InStr(outPath, "/", false, -1))
+    if (p > 1)
+        try DirCreate(SubStr(outPath, 1, p - 1))
+    try FileDelete outPath
+    FileAppend out, outPath, "UTF-8"
+    ExitApp(0)
+}
+
+; 撤销探针：--probe restore <场景key> <结果文件>
+ProbeRestore(sceneKey, outPath) {
+    n := 0
+    for root in SceneRoots(sceneKey, "") {
+        base := "Software\Classes\" root "\shell"
+        reps := ReplicaMap(root)
+        for verb, name in reps {
+            RegDelTree(base "\" name)
+            n++
+        }
+        for verb in reps {
+            try RegDelete "HKCU\" base "\" verb, HIDE_MARK
+            try RegDelete "HKCU\" base "\" verb, TAKE_MARK
+        }
+    }
+    try FileDelete outPath
+    FileAppend "restored=" n, outPath, "UTF-8"
+    ExitApp(0)
 }
 
 ProbeRoots(sceneKey, dropPath, outPath) {
@@ -1254,6 +1932,36 @@ RunSelfTest(path) {
         , "系统共享 CLSID 识别、7-Zip 不误判", &out, &fails)
     Chk(ComLabel("7-Zip", "7-Zip Shell Extension") = "7-Zip"
         && ComLabel("{guid}", "ShellContextMenu Class") = "{guid}", "COM 泛显示名回退注册名", &out, &fails)
+    ; ── 1.4.0 顺序接管（副本）/ 五列 / 表头排序 ────────────────────────────
+    Chk(ReplicaName(2, "cmd") = "p0002#cmd" && ReplicaVerb("p0002#cmd") = "cmd"
+        && ReplicaRank("p0002#cmd") = 2
+        , "副本键名可逆：p0002#cmd → rank2 + 原 verb", &out, &fails)
+    Chk(IsReplicaName("p0001#cmd") && !IsReplicaName("cmd") && !IsReplicaName("p1#cmd")
+        && !IsReplicaName("Personalize"), "副本名识别只认 p+四位数字+#", &out, &fails)
+    Chk(StripAccel("使用 Visual Studio 打开(&V)") = "使用 Visual Studio 打开"
+        && StripAccel("打开(&O)") = "打开" && StripAccel("Powershell(&S)") = "Powershell"
+        , "去掉 & 快捷键标记", &out, &fails)
+    Chk(SortKeyOf({ ord: 7 }, 1) = "00007" && SortKeyOf({ ord: 12 }, 1) = "00012"
+        , "顺序列排序键定长补零（12 排在 7 之后）", &out, &fails)
+    gs := SortGroups([{ it: { ord: 3, label: "c", src: "静态", state: "show", pos: "default" }, subs: [] }
+        , { it: { ord: 1, label: "a", src: "静态", state: "show", pos: "default" }, subs: [] }
+        , { it: { ord: 2, label: "b", src: "静态", state: "show", pos: "default" }, subs: [] }], 1, true)
+    Chk(gs[1].it.ord = 1 && gs[2].it.ord = 2 && gs[3].it.ord = 3, "按顺序列升序排组", &out, &fails)
+    gd := SortGroups([{ it: { ord: 1, label: "a", src: "静态", state: "show", pos: "default" }, subs: [] }
+        , { it: { ord: 2, label: "b", src: "静态", state: "show", pos: "default" }, subs: [] }], 1, false)
+    Chk(gd[1].it.ord = 2 && gd[2].it.ord = 1, "同列再点一次反向（降序）", &out, &fails)
+    gn := SortGroups([{ it: { ord: 1, label: "b", src: "静态", state: "show", pos: "default" }, subs: [] }
+        , { it: { ord: 2, label: "a", src: "静态", state: "show", pos: "default" }, subs: [] }], 2, true)
+    Chk(gn[1].it.label = "a" && gn[2].it.label = "b", "按菜单项列排序（中文按 Logical）", &out, &fails)
+    Chk(SubStr(SubItem("文件夹", "新建").label, 1, 6) = "    · "
+        && SubItem("x", "发送到").layer = "sub", "二级项缩进标记与图层", &out, &fails)
+    ; SHGetFileInfoW 对 "x.txt" 这类假文件也能给出本地化类型名（不用建文件）。
+    ; 注意它对没有扩展名的 "x" 也会自己编「X 文件」，所以调用方必须自己判空扩展名。
+    Chk(ExtTypeName(".txt") != "" && InStr(ExtTypeName(".txt"), ".") = 0
+        , "SHGetFileInfo 类型名：拿到本地化类型名（TXT 文件）", &out, &fails)
+    Chk(PosRank("top") = 1 && PosRank("default") = 2 && PosRank("bottom") = 3
+        && StatusRank("show") = 1 && StatusRank("hidden") = 2 && StatusRank("syshidden") = 3
+        , "位置/状态排序档位", &out, &fails)
     out .= "fails=" fails "`n"
     if (pos := InStr(path, "\", false, -1) - 1) > 0
         try DirCreate(SubStr(path, 1, pos))
