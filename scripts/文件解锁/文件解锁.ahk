@@ -2,7 +2,7 @@
 ; @name         文件解锁
 ; @id           file-unlock
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.1.2
+; @version      1.1.3
 ; @description  拖入文件或文件夹，自动检测占用，一键解除占用或删除（含保留名/权限受限文件）
 ; @author       邱宗满
 ; @date         2026-11-17
@@ -575,7 +575,7 @@ UnlockSelected() {
     }
     warn := blocked ? "`n已跳过 " blocked " 个系统关键进程。`n" : ""
     if MsgBox("将结束以下占用进程以解除占用：`n`n" detail . warn
-            . "`n未保存的数据可能丢失，确定继续？", "文件解锁 · 确认解除", 0x4 | 0x30) != 6
+            . "`n未保存的数据可能丢失，确定继续？", "文件解锁 · 确认解除", 0x4 | 0x30) != "Yes"
     {
         gStatus.Value := "已取消"
         return
@@ -590,8 +590,9 @@ UnlockSelected() {
         else
             failed++
     }
-    ; 复查状态
+    ; 复查状态（先等内核回收被杀进程的句柄，否则会读到残留共享冲突）
     gStatus.Value := "已结束 " killed " 个进程" (failed ? "，失败 " failed " 个" : "") " · 正在复查…"
+    Sleep 400
     for i in idxs {
         if (i < 1 || i > gItems.Length)
             continue
@@ -621,7 +622,7 @@ DeleteSelected() {
         names .= "  · " gItems[i].path "`n"
     }
     if MsgBox("将永久删除以下项目（不进回收站）：`n`n" names
-            . "`n此操作不可撤销，确定继续？", "文件解锁 · 确认删除", 0x4 | 0x30) != 6
+            . "`n此操作不可撤销，确定继续？", "文件解锁 · 确认删除", 0x4 | 0x30) != "Yes"
     {
         gStatus.Value := "已取消"
         return

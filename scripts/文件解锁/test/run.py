@@ -4,15 +4,17 @@
 前置：把 <名>.ahk 复制进 .build/Scripts 平铺目录，再运行：
   python scripts/文件解锁/test/run.py
 
-三层断言：
+四层断言：
   1. --selftest 纯逻辑（NtPath / FPIF 找占用者 / 占用检测 / 删除保留名文件）；
   2. inspect_ui 几何：窗口 672×352 + 列表/两按钮/状态条齐全，按钮宽≈文字宽+32（K25）；
   3. 拖入即检测端到端（WM_DROPFILES 注入）：
      - nul 保留名文件 → 状态「未占用」（不误报进程）；
      - holder 占用的文件 → 状态「被占用 · 进程名」。
+  4. 解除占用全链路：点按钮 → 确认框出现 → 向 #32770 投 WM_COMMAND(IDYES=6)
+     → 状态「解除完成」且行状态翻回「未占用」。
 
-不测删除/解除按钮的确认框流程（模态框无法从 MCP 外部可靠注入"是"）；
-该流程已在临时短路确认框的副本上单独实证，见 info/HISTORY.md。
+确认框注入口径：AHK v2 的 MsgBox 返回的是按钮**字符串**（"Yes"），不是 6；
+比较写成 `!= 6` 会恒真、每次都当作用户取消（1.1.2 的真 bug）。
 只起本脚本自己的 MCP 临时实例 + holder 子进程，不动用户手开的主程序。
 """
 import ctypes
@@ -44,6 +46,8 @@ _kernel32.GlobalLock.restype = ctypes.c_void_p
 _kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
 _kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
 _user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+_user32.FindWindowW.restype = wintypes.HWND
+_user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
 _kernel32.CreateFileW.restype = wintypes.HANDLE
 _kernel32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
                                   ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
@@ -68,7 +72,7 @@ def test_selftest(m, sid):
     for kw in ("NtPath 盘符前缀", "NtPath UNC 前缀", "FPIF 找出占用本文件的进程 PID",
                "删除保留名文件 con"):
         assert kw in text, f"自测断言缺失: {kw}"
-    print("  [1/3] selftest 全绿（NtPath / FPIF / 占用检测 / 删保留名）")
+    print("  [1/4] selftest 全绿（NtPath / FPIF / 占用检测 / 删保留名）")
 
 
 def read_ui(m, sess):
@@ -102,7 +106,7 @@ def test_geometry(m, sess):
     assert btn_y and min(btn_y) in (288, 289), f"操作行 y 应≈288: {btn_y}"
     # 状态条在 y322；窗口高 352 = 322 + 30，无多余底部空白
     assert c.get("h") == 352, f"窗口高应=352（状态条贴底）: {c}"
-    print("  [2/3] GUI 几何 672×352 + 列表/解除占用/删除按钮齐全（无输入框、无顶部说明行）")
+    print("  [2/4] GUI 几何 672×352 + 列表/解除占用/删除按钮齐全（无输入框、无顶部说明行）")
 
 
 def find_gui_hwnd():
@@ -159,7 +163,7 @@ def test_drop_detect(m, sess):
         rows = list_rows(m, sess)
         assert rows and any("nul" in str(r) and "未占用" in str(r) for r in rows), \
             f"nul 未显示未占用（可能误报占用进程）: {rows}"
-        print("  [3/3] 拖入即检测：nul 保留名文件正确显示「未占用」")
+        print("  [3/4] 拖入即检测：nul 保留名文件正确显示「未占用」")
 
         # holder 占用的普通文件
         demo = os.path.join(d, "locked.txt")
@@ -186,6 +190,60 @@ def test_drop_detect(m, sess):
         shutil.rmtree(d, ignore_errors=True)
 
 
+def click_control(m, sess, text):
+    """按控件文字点一下（inspect_ui 的 client 口径坐标）。"""
+    ins = read_ui(m, sess)
+    for w in ins.get("windows", []):
+        for c in w.get("controls", []):
+            if c.get("text") == text:
+                cd = c["client"]
+                return m.call("send_input", {"session": sess, "action": "click",
+                                             "x": cd["x"] + cd["w"] // 2,
+                                             "y": cd["y"] + cd["h"] // 2})
+    raise AssertionError(f"找不到控件：{text}")
+
+
+def test_unlock_flow(m, sess):
+    """解除占用全链路：确认框投 IDYES，验证状态与列表翻新。"""
+    d = tempfile.mkdtemp(prefix="ahkdeck_unlock_flow_")
+    holder = None
+    try:
+        demo = os.path.join(d, "flow.txt")
+        with open(demo, "w", encoding="utf-8") as f:
+            f.write("flow")
+        HOLDER_OUT.unlink(missing_ok=True)
+        holder = subprocess.Popen([str(BUILD / "AutoHotkey64.exe"), str(HOLDER), demo])
+        time.sleep(1)
+        hwnd = find_gui_hwnd()
+        drop_files(hwnd, demo)
+        time.sleep(1.5)
+        rows = list_rows(m, sess)
+        assert any("flow.txt" in str(r) and "被占用" in str(r) for r in rows), \
+            f"占用文件未显示「被占用」: {rows}"
+
+        click_control(m, sess, "解除占用")
+        time.sleep(1.2)
+        dlg = _user32.FindWindowW("#32770", "文件解锁 · 确认解除")
+        assert dlg, "确认框未出现（解除占用按钮回调没走到 MsgBox）"
+        _user32.PostMessageW(wintypes.HWND(dlg), 0x111, 6, 0)   # WM_COMMAND IDYES
+        time.sleep(2.0)
+
+        rows = list_rows(m, sess)
+        row = [r for r in rows if "flow.txt" in str(r)]
+        assert row and "未占用" in str(row[0]), f"解除后仍显示占用: {row}"
+        texts = [c.get("text", "") for w in read_ui(m, sess).get("windows", [])
+                 for c in w.get("controls", [])]
+        joined = " | ".join(t for t in texts if t)
+        assert "解除完成" in joined, f"状态条未显示解除完成（可能又被当成取消）: {joined}"
+        assert "已取消" not in joined, f"确认框的「是」被误判为取消: {joined}"
+        print("  [4/4] 解除占用全链路：确认「是」→ 结束后状态翻回「未占用」")
+    finally:
+        if holder is not None and holder.poll() is None:
+            holder.terminate()
+        HOLDER_OUT.unlink(missing_ok=True)
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def main():
     m = MCP()
     sess = None
@@ -200,6 +258,7 @@ def main():
         time.sleep(1)
         test_geometry(m, sess)
         test_drop_detect(m, sess)
+        test_unlock_flow(m, sess)
 
         out = m.call("get_session_output", {"session": sess})
         assert not out.get("errors"), f"GUI 有运行时错误: {out.get('errors')}"
