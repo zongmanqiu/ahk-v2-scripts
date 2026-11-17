@@ -2,7 +2,7 @@
 ; @name         文件解锁
 ; @id           file-unlock
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.2.0
+; @version      1.3.0
 ; @description  拖入文件或文件夹，自动检测占用，一键解除占用或删除（含保留名/权限受限文件）
 ; @author       邱宗满
 ; @date         2026-11-17
@@ -391,7 +391,7 @@ BuildGui() {
     global gGui, gList, gStatus, gInfo, gFrame, gBand, gHdrPath, gHdrType, gHdrOcc
     global gStBand, gBtnUnlock, gBtnDel
     global EDGE, ROW_W
-    gGui := Gui("+Resize", "文件解锁")
+    gGui := Gui("+Resize +0x02000000", "文件解锁")   ; WS_CLIPCHILDREN：父窗口别刷在子控件上（防闪）
     gGui.BackColor := "F7F9FC"
     gGui.SetFont("s10", "Microsoft YaHei UI")
     gGui.OnEvent("Close", (*) => ExitApp())
@@ -431,6 +431,15 @@ OnSize(guiObj, minMax, width, height) {
     if (minMax = -1 || width < 1 || height < 1)
         return
     Layout(width, height)
+    ForceRepaint(guiObj.Hwnd)
+}
+
+; 拖拽边框时控件是逐个 Move 的，父窗口底下会留下没擦掉的旧痕迹（表现为"没及时重绘"）；
+; 每次重排后统一强制重画一次整窗（含子控件），并立即刷出，别等下一轮消息。
+ForceRepaint(hwnd) {
+    static RDW_INVALIDATE := 0x1, RDW_ERASE := 0x4, RDW_ALLCHILDREN := 0x80, RDW_UPDATENOW := 0x100
+    DllCall("user32\RedrawWindow", "Ptr", hwnd, "Ptr", 0, "Ptr", 0, "UInt"
+        , RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW, "Int")
 }
 
 ; 拖拽边框最小值（WM_GETMINMAXINFO，ptMinTrackSize 在 offset 24/28）
@@ -699,13 +708,21 @@ DeleteSelected() {
             continue
         names .= "  · " gItems[i].path "`n"
     }
-    if MsgBox("将永久删除以下项目（不进回收站）：`n`n" names
-            . "`n此操作不可撤销，确定继续？", "文件解锁 · 确认删除", 0x4 | 0x30) != "Yes"
+    ; 回收站放不进去的项（Windows 保留名 nul/con/aux/prn/com1…）必须提前说清楚
+    hard := 0
+    for i in idxs {
+        if (i >= 1 && i <= gItems.Length && IsReservedName(gItems[i].path))
+            hard++
+    }
+    tip := "将把以下项目放入回收站（可在回收站还原）：`n`n" names
+    if hard
+        tip .= "`n其中 " hard " 项是 Windows 保留名文件，回收站不支持，只能永久删除。`n"
+    if MsgBox(tip . "`n确定继续？", "文件解锁 · 确认删除", 0x4 | 0x30) != "Yes"
     {
         gStatus.Value := "已取消"
         return
     }
-    ok := 0, fail := 0
+    recycled := 0, purged := 0, fail := 0
     failDetail := ""
     ; 从后往前删，避免索引错位
     sorted := []
@@ -725,16 +742,21 @@ DeleteSelected() {
     removed := Map()
     for i in sorted {
         it := gItems[i]
-        res := [false, ""]
         if (FileAttrs(it.path) = 0xFFFFFFFF) {
-            res := [true, ""]                    ; 已不存在，视为成功
-        } else if IsDirPath(it.path) {
-            res := DeleteDirTree(it.path)        ; 目录（含 junction 走内部 reparse 分支）
-        } else {
-            res := DeleteOneFile(it.path)
+            recycled++, removed[i] := 1       ; 已不存在，视为成功
+            continue
         }
+        ; 被占用先解除（与「解除占用」同一套保护名单），否则回收站也搬不动
+        if (it.occ = "locked" && it.owners.Length) {
+            KillOwnersOf(it.owners)
+            Sleep 200
+        }
+        res := DeleteItem(it.path)
         if res[1] {
-            ok++
+            if (res[3] = "purged")
+                purged++
+            else
+                recycled++
             removed[i] := 1
         } else {
             fail++
@@ -752,10 +774,99 @@ DeleteSelected() {
     }
     RefreshList()
     UpdateSummary()
+    txt := "删除完成 · 回收站 " recycled " 项"
+    if purged
+        txt .= " · 永久删除 " purged " 项"
     if fail
-        gStatus.Value := "删除完成 · 成功 " ok "，失败 " fail failDetail
-    else
-        gStatus.Value := "删除完成 · 成功 " ok " 项"
+        txt .= " · 失败 " fail failDetail
+    gStatus.Value := txt
+}
+
+; ── 删除单项：优先回收站（可还原），保留名只能永久删 ──────────────────
+; 返回 [成功?, 错误, "recycled"/"purged"]
+DeleteItem(path) {
+    if IsReservedName(path) {
+        r := IsDirPath(path) ? DeleteDirTree(path) : DeleteOneFile(path)
+        return r[1] ? [true, "", "purged"] : [false, r[2], ""]
+    }
+    r := RecyclePath(path)
+    if r[1]
+        return [true, "", "recycled"]
+    return [false, r[2], ""]
+}
+
+; ── 放进回收站：SHFileOperationW(FO_DELETE + FOF_ALLOWUNDO) ───────────
+; 不用 \\?\ 前缀（Shell 不认）；目录整棵进回收站，还原时也是整棵回来。
+; 失败时**不悄悄改成永久删除**——宁可报错，也不让用户以为还能还原。
+RecyclePath(path) {
+    if (FSState(path) = "gone")
+        return [true, ""]
+    buf := Buffer(StrPut(path, "UTF-16") * 2 + 2, 0)   ; 双 null 结尾
+    StrPut(path, buf, "UTF-16")
+    fos := Buffer(56, 0)
+    NumPut("Ptr", 0, fos, 0)                          ; hwnd
+    NumPut("UInt", 3, fos, 8)                         ; FO_DELETE
+    NumPut("Ptr", buf.Ptr, fos, 16)                   ; pFrom
+    NumPut("Ptr", 0, fos, 24)                         ; pTo
+    NumPut("UShort", 0x4 | 0x10 | 0x40 | 0x400        ; SILENT|NOCONFIRMATION|ALLOWUNDO|NOERRORUI
+        , fos, 32)
+    NumPut("Int", 0, fos, 36)                         ; fAnyOperationsAborted
+    NumPut("Ptr", 0, fos, 40)                         ; hNameMappings
+    NumPut("Ptr", 0, fos, 48)                         ; lpszProgressTitle
+    rc := DllCall("shell32\SHFileOperationW", "Ptr", fos, "Int")
+    aborted := NumGet(fos, 36, "Int")
+    if (!rc && !aborted && FileAttrs(path) = 0xFFFFFFFF)
+        return [true, ""]
+    if (!rc && !aborted)
+        return [false, "回收站未生效"]                  ; rc=0 却还在：少见，按失败报
+    if (aborted)
+        return [false, "回收站操作被中止"]
+    return [false, "回收站失败：" RecycleErrText(rc)]
+}
+
+; SHFileOperation 的 DE_* 码翻成人话（原始码留在括号里方便排查）
+RecycleErrText(rc) {
+    if (rc = 0x78 || rc = 5)
+        return "拒绝访问（权限或 ACL）"
+    if (rc = 0x7C || rc = 32 || rc = 33)
+        return "文件正被占用"
+    if (rc = 2 || rc = 3 || rc = 0x7D)
+        return "路径不存在"
+    if (rc = 0x7E)
+        return "文件名不合法"                    ; DE_INVALIDFILES
+    if (rc = 0x74)
+        return "不在同一磁盘"                    ; DE_DIFFDIR
+    return "err=" rc
+}
+
+; ── Windows 保留名（回收站与普通 Shell API 都不支持）──────────────────
+IsReservedName(path) {
+    SplitPath path, &nm
+    if (dt := InStr(nm, "."))
+        nm := SubStr(nm, 1, dt - 1)
+    nm := Trim(nm, " ")
+    if (nm = "")
+        return false
+    base := StrLower(nm)
+    if (base = "con" || base = "prn" || base = "aux" || base = "nul")
+        return true
+    ; com1-com9 / lpt1-lpt9（COM¹ 等上标形式也一并算）
+    if (SubStr(base, 1, 3) = "com" || SubStr(base, 1, 3) = "lpt") {
+        rest := SubStr(base, 4)
+        if (rest = "1" || rest = "2" || rest = "3" || rest = "4" || rest = "5"
+            || rest = "6" || rest = "7" || rest = "8" || rest = "9")
+            return true
+    }
+    return false
+}
+
+; 结束一批占用进程（保护名单内的跳过）
+KillOwnersOf(owners) {
+    for pid in owners {
+        nm := ProcName(pid)
+        if !CRITICAL_PROCS.Has(StrLower(nm))
+            KillProcess(pid, nm)
+    }
 }
 
 ShortName(p) {
@@ -783,6 +894,11 @@ RunSelfTest(path) {
     ; 幂等：Loop Files 给出的 \\?\ 路径会再进 DeleteOneFile/ClearAttributes，
     ; 重复前缀会变成 \\?\UNC\?\E:\... → DeleteFileW err=53（1.1.3 的真 bug）
     Emit((NtPath("\\?\C:\a\b") = "\\?\C:\a\b" ? "PASS " : "FAIL ") "NtPath 幂等（已带 \\?\ 不加第二层）")
+    ; 保留名识别：回收站放不进去，删除时必须走永久删分支并如实提示
+    Emit((IsReservedName("C:\a\nul") ? "PASS " : "FAIL ") "保留名识别 nul")
+    Emit((IsReservedName("C:\a\CON.txt") ? "PASS " : "FAIL ") "保留名识别 CON.txt（带扩展名也算）")
+    Emit((IsReservedName("C:\a\com7") ? "PASS " : "FAIL ") "保留名识别 com7")
+    Emit((!IsReservedName("C:\a\console.txt") ? "PASS " : "FAIL ") "普通文件名不误判为保留名")
 
     ; 3. 占用检测 + FPIF 找占用者：CreateFileW(share=3) 持有才构成真正占用
     tf := A_Temp "\ahkdeck-unlock-selftest-" myPid ".txt"

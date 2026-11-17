@@ -4,15 +4,16 @@
 前置：把 <名>.ahk 复制进 .build/Scripts 平铺目录，再运行：
   python scripts/文件解锁/test/run.py
 
-五层断言：
-  1. --selftest 纯逻辑（NtPath / FPIF 找占用者 / 占用检测 / 删除保留名文件）；
+六层断言：
+  1. --selftest 纯逻辑（NtPath 幂等 / 保留名识别 / FPIF 找占用者 / 删含子目录的文件夹）；
   2. inspect_ui 几何：窗口 672×352 + 列表/两按钮/状态条齐全，按钮宽≈文字宽+32（K25）；
-     以及缩放/最大化后各块跟随（列表吸收纵向余量、路径列吸收横向余量、状态条贴底）；
   3. 拖入即检测端到端（WM_DROPFILES 注入）：
      - nul 保留名文件 → 状态「无占用」（不误报进程）；
      - holder 占用的文件 → 状态列直接显示进程名。
-  4. 解除占用全链路：点按钮 → 确认框出现 → 向 #32770 投 WM_COMMAND(IDYES=6)
+  4. 缩放/最大化：列表吸收纵向余量、路径列吸收横向余量、状态条贴底、按钮不被拉伸；
+  5. 解除占用全链路：点按钮 → 确认框出现 → 向 #32770 投 WM_COMMAND(IDYES=6)
      → 状态「解除完成」且行状态翻回「无占用」。
+  6. 删除进回收站：文件消失 + `SHQueryRecycleBin` 项数 +1（证明可还原）。
 
 确认框注入口径：AHK v2 的 MsgBox 返回的是按钮**字符串**（"Yes"），不是 6；
 比较写成 `!= 6` 会恒真、每次都当作用户取消（1.1.2 的真 bug）。
@@ -73,7 +74,7 @@ def test_selftest(m, sid):
     for kw in ("NtPath 盘符前缀", "NtPath UNC 前缀", "FPIF 找出占用本文件的进程 PID",
                "删除保留名文件 con"):
         assert kw in text, f"自测断言缺失: {kw}"
-    print("  [1/5] selftest 全绿（NtPath / FPIF / 占用检测 / 删保留名）")
+    print("  [1/6] selftest 全绿（NtPath / FPIF / 占用检测 / 删保留名）")
 
 
 def read_ui(m, sess):
@@ -107,7 +108,7 @@ def test_geometry(m, sess):
     assert btn_y and min(btn_y) in (288, 289), f"操作行 y 应≈288: {btn_y}"
     # 状态条在 y322；窗口高 352 = 322 + 30，无多余底部空白
     assert c.get("h") == 352, f"窗口高应=352（状态条贴底）: {c}"
-    print("  [2/5] GUI 几何 672×352 + 列表/解除占用/删除按钮齐全（无输入框、无顶部说明行）")
+    print("  [2/6] GUI 几何 672×352 + 列表/解除占用/删除按钮齐全（无输入框、无顶部说明行）")
 
 
 def find_gui_hwnd():
@@ -164,7 +165,7 @@ def test_drop_detect(m, sess):
         rows = list_rows(m, sess)
         assert rows and any("nul" in str(r) and "无占用" in str(r) for r in rows), \
             f"nul 未显示无占用（可能误报占用进程）: {rows}"
-        print("  [3/5] 拖入即检测：nul 保留名文件正确显示「无占用」")
+        print("  [3/6] 拖入即检测：nul 保留名文件正确显示「无占用」")
 
         # holder 占用的普通文件
         demo = os.path.join(d, "locked.txt")
@@ -236,7 +237,7 @@ def test_resize(m, sess):
     time.sleep(0.6)
     cr = read_ui(m, sess)["windows"][0]["client"]
     assert abs(cr["h"] - c["h"]) <= 2 and abs(cr["w"] - c["w"]) <= 2, f"还原尺寸不对: {cr} vs {c}"
-    print("  [4/5] 缩放/最大化：列表吸收余量、状态条贴底、按钮不被拉伸")
+    print("  [4/6] 缩放/最大化：列表吸收余量、状态条贴底、按钮不被拉伸")
 
 
 def click_control(m, sess, text):
@@ -285,12 +286,51 @@ def test_unlock_flow(m, sess):
         joined = " | ".join(t for t in texts if t)
         assert "解除完成" in joined, f"状态条未显示解除完成（可能又被当成取消）: {joined}"
         assert "已取消" not in joined, f"确认框的「是」被误判为取消: {joined}"
-        print("  [5/5] 解除占用全链路：确认「是」→ 结束后状态翻回「无占用」")
+        print("  [5/6] 解除占用全链路：确认「是」→ 结束后状态翻回「无占用」")
     finally:
         if holder is not None and holder.poll() is None:
             holder.terminate()
         HOLDER_OUT.unlink(missing_ok=True)
         shutil.rmtree(d, ignore_errors=True)
+
+
+def recycle_bin_items(drive):
+    """SHQueryRecycleBin 取该盘的回收站项数（用来证明文件真进了回收站）。"""
+    class QRB(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD),
+                    ("i64Size", ctypes.c_longlong),
+                    ("i64NumItems", ctypes.c_longlong)]
+    q = QRB()
+    q.cbSize = ctypes.sizeof(q)
+    ctypes.windll.shell32.SHQueryRecycleBinW(ctypes.c_wchar_p(drive), ctypes.byref(q))
+    return q.i64NumItems
+
+
+def test_delete_to_recycle(m, sess):
+    """删除必须进回收站（可从回收站还原），保留名才走永久删除。"""
+    d = tempfile.mkdtemp(prefix="ahkdeck_recycle_")
+    f = os.path.join(d, "recycle-me.txt")
+    with open(f, "w", encoding="utf-8") as fh:
+        fh.write("recycle")
+    before = recycle_bin_items(os.path.splitdrive(f)[0] + "\\")
+    hwnd = find_gui_hwnd()
+    drop_files(hwnd, f)
+    time.sleep(1.5)
+    click_control(m, sess, "删除")
+    time.sleep(1.2)
+    dlg = _user32.FindWindowW("#32770", "文件解锁 · 确认删除")
+    assert dlg, "删除确认框未出现"
+    _user32.PostMessageW(wintypes.HWND(dlg), 0x111, 6, 0)   # IDYES
+    time.sleep(2.5)
+    assert not os.path.exists(f), "文件仍在原地"
+    after = recycle_bin_items(os.path.splitdrive(f)[0] + "\\")
+    assert after > before, f"文件没进回收站（项数 {before} → {after}）"
+    texts = [c.get("text", "") for w in read_ui(m, sess).get("windows", [])
+             for c in w.get("controls", [])]
+    joined = " | ".join(t for t in texts if t)
+    assert re.search(r"回收站 [1-9]\d* 项", joined), f"状态条未说明已进回收站: {joined}"
+    shutil.rmtree(d, ignore_errors=True)
+    print("  [6/6] 删除进回收站：文件消失且回收站项数 +1（可还原）")
 
 
 def main():
@@ -309,6 +349,7 @@ def main():
         test_drop_detect(m, sess)
         test_resize(m, sess)
         test_unlock_flow(m, sess)
+        test_delete_to_recycle(m, sess)
 
         out = m.call("get_session_output", {"session": sess})
         assert not out.get("errors"), f"GUI 有运行时错误: {out.get('errors')}"

@@ -2,6 +2,29 @@
 
 只增不改：每次发版在最上面加一段 `## <版本>（日期）`。
 
+## 1.3.0（2026-11-17）
+
+按反馈改两处：删除改走回收站（可还原），缩放时重绘不及时。
+
+**改进**
+- **删除 → 回收站**：`SHFileOperationW(FO_DELETE | FOF_ALLOWUNDO | FOF_SILENT | FOF_NOCONFIRMATION
+  | FOF_NOERRORUI)`，目录整棵进回收站、还原时整棵回来。核心原则：**回收站失败就如实报错，
+  绝不悄悄改成永久删除**，否则用户以为还能还原。被占用的项先按保护名单解占用再搬。
+  Windows 保留名（nul/con/aux/prn/com1-9/lpt1-9，带扩展名也算）回收站不收 → 仍走永久删，
+  确认框与状态条分开计数写明（「回收站 N 项 · 永久删除 M 项」）。
+  状态条不再有 `成功/失败` 的模糊说法。
+- **缩放重绘**：`WS_CLIPCHILDREN` 防父窗口刷到子控件上；每次 `Size` 重排后
+  `RedrawWindow(RDW_INVALIDATE|RDW_ERASE|RDW_ALLCHILDREN|RDW_UPDATENOW)` 强制整窗同步重画，
+  不再等下一轮消息（原先拖边框会看到旧痕迹）。
+
+**坑**
+- `SHFileOperationW` 的 `pFrom` 必须是**双 null 结尾**的绝对路径，且**不能带 `\\?\`**
+  （Shell 不认直通前缀）。结构体 x64 布局 56 字节：hwnd@0 / wFunc@8 / pFrom@16 / pTo@24 /
+  fFlags@32(WORD) / fAnyOperationsAborted@36 / hNameMappings@40 / lpszProgressTitle@48。
+
+**验收**：selftest 15 项全绿（新增 4 条保留名识别）；回归六层 ALL PASS（新增「删除进回收站」
+——用 `SHQueryRecycleBin` 断言盘上回收站项数 +1，证明真能还原）；连续三档缩放后**立刻**截图无残留。
+
 ## 1.2.0（2026-11-17）
 
 用户实测「解除占用成功、但删除失败」，又提了两点体验要求。这一版修掉两个真 bug，
