@@ -22,6 +22,26 @@
       "historyGithub": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/master/history/double-click-debounce.json"
     },
     {
+      "name": "右键复制路径",
+      "id": "copy-full-path",
+      "version": "1.0.0",
+      "date": "2026-11-17",
+      "description": "给文件/文件夹空白处/文件夹/驱动器的右键菜单加「复制完整路径」，只写 HKCU，随时可撤销",
+      "author": "邱宗满",
+      "license": "AGPL-3.0",
+      "requires": "AutoHotkey v2.0",
+      "host": "AHKDeck 0.3.6+（亦可独立运行）",
+      "entry": "主窗口勾选场景后「应用」；--copy-path 为菜单静默调用；--selftest 为无 GUI 分支",
+      "path": "scripts/右键复制路径/右键复制路径.ahk",
+      "size_kb": 11.1,
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/copy-full-path-1.0.0/copy-full-path.ahk",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/copy-full-path-1.0.0/copy-full-path.ahk",
+      "package": "",
+      "packageGithub": "",
+      "history": "https://raw.giteeusercontent.com/qiuzongman/ahk-v2-scripts/raw/master/history/copy-full-path.json",
+      "historyGithub": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/master/history/copy-full-path.json"
+    },
+    {
       "name": "夜灯",
       "id": "night-light",
       "version": "1.2.4",
