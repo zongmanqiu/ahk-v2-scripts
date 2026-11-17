@@ -2,7 +2,7 @@
 ; @name         文件解锁
 ; @id           file-unlock
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.3.0
+; @version      1.3.1
 ; @description  拖入文件或文件夹，自动检测占用，一键解除占用或删除（含保留名/权限受限文件）
 ; @author       邱宗满
 ; @date         2026-11-17
@@ -71,7 +71,8 @@ CRITICAL_PROCS := Map("smss.exe", 1, "csrss.exe", 1, "wininit.exe", 1, "winlogon
     , "dwm.exe", 1, "sihost.exe", 1, "svchost.exe", 1, "audiodg.exe", 1
     , "conhost.exe", 1, "explorer.exe", 1, "System", 1, "Registry", 1)
 
-gGui := 0, gList := 0, gStatus := 0, gInfo := 0
+gGui := 0, gList := 0, gStatus := 0, gInfo := 0, gScroll := 0
+gLvWhite := 0, gLineTop := 0, gLineBot := 0, gLineLft := 0, gLineRgt := 0
 gItems := []          ; [{path, isDir, owners:[pid], names:"进程名列表"}]，每行对应一项
 
 ; ── 文件系统属性判断（一律走 \\?\ 直通；FileExist 对 junction/保留名不可靠）──
@@ -382,24 +383,313 @@ MeasureTextWidth(text, size := 10, fontName := "Microsoft YaHei UI") {
     return w
 }
 
+; ── 自绘滚动条 ──────────────────────────────────────────────────────────
+; 整段复用《硬件信息》2.3.4 的 class FlatScroll（只竖轴版，可缩放窗口已验证）。
+; 原生条由 comctl32 主题引擎绘制，脚本拿不到颜色；ShowScrollBar(FALSE) 只是「按需隐藏」，
+; Move/Add/Delete/ModifyCol/LVM_SCROLL 都会把样式位置回，所以每次动作后补一刀 + Sync 兜底。
+; 三个有意差异（均实测）：逐块 SetWindowPos 不用批量提交、滚动走 LVM_SCROLL 像素增量、
+; 每页行数取 LVM_GETCOUNTPERPAGE。横向条撤掉，列宽做进视口。
+class FlatScroll {
+    __New(g, lv, x, y, w, h, t := 10) {
+        this.g := g, this.lv := lv
+        this.x := x, this.y := y, this.w := w, this.h := h, this.t := t
+        this.tn := Max(3, t - 6), this.off := (t - this.tn) // 2
+        this.pad := 2
+        this.lvW := 0, this.lvH := 0, this.itemH := 23
+        this.exV := false, this.dead := false
+        this.lastV := -1, this.lastCount := -1
+        this.rows := 0, this.viewRows := 1, this.top := 0, this.maxTop := 0
+        this.ops := [], this.dragging := false
+        ; SetTimer 按 FuncObj 身份认定时器：绑一次全程复用，否则关不掉、越叠越多。
+        this.fnTick := ObjBindMethod(this, "DragTick")
+        this.fnSync := ObjBindMethod(this, "Sync")
+        ; +0x100 = SS_NOTIFY：不加静态控件命中测试透明，点击穿透到父窗口（K19）。
+        ; 轨道拆「滑块前/后」两段，与滑块几何永不重叠（叠放抬 z 序压不住，K20）。
+        this.vUp := g.Add("Text", "x" x " y" y " w0 h0 +0x100 BackgroundDCE8F7")
+        this.vDn := g.Add("Text", "x" x " y" y " w0 h0 +0x100 BackgroundDCE8F7")
+        this.vGapL := g.Add("Text", "x" x " y" y " w0 h0 +0x100 BackgroundDCE8F7")
+        this.vGapR := g.Add("Text", "x" x " y" y " w0 h0 +0x100 BackgroundDCE8F7")
+        this.thumbV := g.Add("Text", "x" x " y" y " w0 h0 +0x100 Background6E9BD4")
+        for c in [this.vUp, this.vDn, this.vGapL, this.vGapR, this.thumbV]
+            c.Visible := false
+    }
+
+    ; 内容超出才占位，与原生一致；最多三轮收敛。
+    Layout() {
+        if (!this.lv.Hwnd)
+            return
+        loop 3 {
+            this.HideNative()
+            this.Measure()
+            w := this.w - (this.exV ? this.t : 0)
+            if (w = this.lvW && this.h = this.lvH)
+                break
+            this.lv.Move(this.x, this.y, w, this.h)
+            this.lvW := w, this.lvH := this.h
+        }
+        ; 循环最后一步是 Move（会把原生条样式位置回），收尾必须再清一次。
+        this.HideNative()
+        if (this.lv.GetCount() > 0 && this.lvH > 0) {
+            rc := Buffer(16, 0)
+            DllCall("user32\SendMessageW", "Ptr", this.lv.Hwnd, "UInt", 0x100E, "Ptr", 0, "Ptr", rc, "Ptr")
+            ih := NumGet(rc, 12, "Int") - NumGet(rc, 4, "Int")
+            if (ih > 0)
+                this.itemH := ih
+        }
+        this.Repaint()
+        this.Paint()
+    }
+
+    ; 逐块 SetWindowPos：实测批量提交在「列表刚 Move 完」那拍会整批失败返回 NULL。
+    Put(c, on, x, y, w, h) {
+        this.ops.Push({ c: c.Hwnd, on: on && w > 0 && h > 0, x: x, y: y, w: w, h: h })
+    }
+    Flush() {
+        ops := this.ops
+        this.ops := []
+        for o in ops {
+            if (o.on)
+                DllCall("user32\SetWindowPos", "Ptr", o.c, "Ptr", 0, "Int", o.x, "Int", o.y
+                    , "Int", o.w, "Int", o.h, "UInt", 0x0054, "Ptr")
+            else
+                DllCall("user32\ShowWindow", "Ptr", o.c, "Int", 0)
+        }
+    }
+    TrackLen() {
+        return this.lvH - this.pad * 2
+    }
+    Paint() {
+        t := this.t, tn := this.tn, off := this.off, pd := this.pad
+        this.ops := []
+        if (this.exV) {
+            g := this.Geo(this.TrackLen())
+            bx := this.x + this.lvW
+            a := this.y + pd + g.start
+            b := a + g.len
+            this.Put(this.vUp, true, bx, this.y, t, pd + g.start)
+            this.Put(this.vDn, true, bx, b, t, this.y + this.lvH - b)
+            this.Put(this.vGapL, true, bx, a, off, g.len)
+            this.Put(this.vGapR, true, bx + off + tn, a, t - off - tn, g.len)
+            this.Put(this.thumbV, true, bx + off, a, tn, g.len)
+        } else {
+            for c in [this.vUp, this.vDn, this.vGapL, this.vGapR, this.thumbV]
+                this.Put(c, false, 0, 0, 0, 0)
+        }
+        this.Flush()
+    }
+    EnsureHidden() {
+        try {
+            v := DllCall("user32\GetWindowLongW", "Ptr", this.lv.Hwnd, "Int", -16, "Int")
+            if (v & 0x00300000)
+                this.HideNative()
+        }
+    }
+    HideNative() {
+        DllCall("user32\ShowScrollBar", "Ptr", this.lv.Hwnd, "Int", 1, "Int", 0)
+        DllCall("user32\ShowScrollBar", "Ptr", this.lv.Hwnd, "Int", 0, "Int", 0)
+    }
+    Measure() {
+        this.rows := this.lv.GetCount()
+        this.top := this.ReadTop()
+        ; LVM_GETCOUNTPERPAGE 给真实每页行数（按 lvH/itemH 估算会少算半行）。
+        n := DllCall("user32\SendMessageW", "Ptr", this.lv.Hwnd, "UInt", 0x1028, "Ptr", 0, "Ptr", 0, "Ptr")
+        this.viewRows := Max(1, n ? n : Floor(this.lvH / this.itemH))
+        this.maxTop := Max(0, this.rows - this.viewRows)
+        this.exV := this.rows > this.viewRows
+    }
+    ReadTop() {
+        return DllCall("user32\SendMessageW", "Ptr", this.lv.Hwnd, "UInt", 0x1027, "Ptr", 0, "Ptr", 0, "Ptr")
+    }
+    ; LVM_SCROLL 按像素滚并自己夹住范围；滚前滚后各压一次原生条（K22）。
+    ScrollToRow(target) {
+        if (!this.lv.Hwnd)
+            return
+        target := Max(0, Min(this.maxTop, target))
+        dy := (target - this.top) * this.itemH
+        if (dy = 0) {
+            this.Paint()
+            return
+        }
+        this.HideNative()
+        DllCall("user32\SendMessageW", "Ptr", this.lv.Hwnd, "UInt", 0x1014, "Ptr", 0, "Ptr", dy, "Ptr")
+        this.top := this.ReadTop()
+        this.HideNative()
+        this.Repaint()
+        this.Paint()
+    }
+    ; 不带 RDW_ERASE —— 带 ERASE 每次滚轮都会先擦成父底色再画，闪一下白（K44）。
+    Repaint() {
+        if (this.lv.Hwnd)
+            DllCall("user32\RedrawWindow", "Ptr", this.lv.Hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x0101)
+    }
+    ScrollRows(n) {
+        this.ScrollToRow(this.top + n)
+    }
+    OnWheelDelta(delta) {
+        this.ScrollRows(-Round(delta / 120) * 3)
+    }
+    OnKey(vk) {
+        if (vk = 0x21) {
+            this.ScrollRows(-this.viewRows)
+            return 1
+        }
+        if (vk = 0x22) {
+            this.ScrollRows(this.viewRows)
+            return 1
+        }
+        if (vk = 0x24) {
+            this.ScrollRows(-this.rows)
+            return 1
+        }
+        if (vk = 0x23) {
+            this.ScrollRows(this.rows)
+            return 1
+        }
+        return 0
+    }
+    ClientW() {
+        return this.lvW
+    }
+    Geo(trackLen) {
+        len := Max(24, Min(trackLen, Round(trackLen * this.viewRows / Max(1, this.rows))))
+        span := trackLen - len
+        frac := (this.maxTop > 0) ? this.top / this.maxTop : 0
+        return { len: len, start: Round(frac * span), span: span }
+    }
+    OnDown(hwnd) {
+        if (hwnd = this.thumbV.Hwnd || hwnd = this.vGapL.Hwnd || hwnd = this.vGapR.Hwnd)
+            this.BeginDrag()
+        else if (hwnd = this.vUp.Hwnd || hwnd = this.vDn.Hwnd)
+            this.PageJump()
+    }
+    PageJump() {
+        pt := Buffer(8, 0)
+        DllCall("user32\GetCursorPos", "Ptr", pt)
+        c := NumGet(pt, 4, "Int")
+        r := Buffer(16, 0)
+        DllCall("user32\GetWindowRect", "Ptr", this.thumbV.Hwnd, "Ptr", r)
+        a := NumGet(r, 4, "Int"), b := NumGet(r, 12, "Int")
+        dir := (c < a) ? -1 : 1
+        this.ScrollRows(dir * this.viewRows)
+    }
+    BeginDrag() {
+        g := this.Geo(this.TrackLen())
+        if (g.span <= 0 || this.maxTop <= 0)
+            return
+        pt := Buffer(8, 0)
+        DllCall("user32\GetCursorPos", "Ptr", pt)
+        this.dragging := true, this.gBase := g, this.pBase := this.top
+        this.cBase := NumGet(pt, 4, "Int")
+        DllCall("user32\SetCapture", "Ptr", this.thumbV.Hwnd)
+        SetTimer(this.fnTick, 20)
+    }
+    DragTick() {
+        if (!GetKeyState("LButton", "P")) {
+            SetTimer(this.fnTick, 0)
+            DllCall("user32\ReleaseCapture")
+            this.dragging := false
+            return
+        }
+        if (!this.dragging)
+            return
+        pt := Buffer(8, 0)
+        DllCall("user32\GetCursorPos", "Ptr", pt)
+        c := NumGet(pt, 4, "Int")
+        g := this.gBase
+        start := Max(0, Min(g.span, g.start + (c - this.cBase)))
+        this.ScrollToRow(this.pBase + Round((start - g.start) / g.span * this.maxTop))
+    }
+    Sync() {
+        if (this.dead)
+            return
+        try {
+            this.EnsureHidden()
+            if (this.dragging)
+                return
+            n := this.lv.GetCount()
+            if (n != this.lastCount) {
+                this.lastCount := n
+                this.Layout()
+                return
+            }
+            v := this.ReadTop()
+            if (v != this.lastV) {
+                this.lastV := v
+                this.top := v
+                this.Paint()
+            }
+        }
+    }
+    ; 关窗前先 Stop，否则定时器下一拍访问已销毁控件（K21）。
+    Stop() {
+        if (this.dead)
+            return
+        this.dead := true
+        SetTimer(this.fnSync, 0)
+        SetTimer(this.fnTick, 0)
+        if (this.dragging)
+            DllCall("user32\ReleaseCapture")
+    }
+}
+
+HookBarInput() {
+    OnMessage(0x201, OnBarDown)
+    OnMessage(0x20A, OnBarWheel)
+    OnMessage(0x100, OnBarKey)
+}
+OnBarDown(wp, lp, msg, hwnd) {
+    global gScroll
+    if (gScroll && !gScroll.dead)
+        gScroll.OnDown(hwnd)
+}
+OnBarWheel(wp, lp, msg, hwnd) {
+    global gScroll, gGui
+    if (!gScroll || gScroll.dead)
+        return
+    delta := (wp >> 16) & 0xFFFF
+    if (delta & 0x8000)
+        delta := delta - 0x10000
+    ; 摘掉原生条后 ListView 不再自己处理滚轮：窗口内任意控件上都滚列表。
+    if (gGui.Hwnd && DllCall("user32\IsChild", "Ptr", gGui.Hwnd, "Ptr", hwnd)) {
+        gScroll.OnWheelDelta(delta)
+        return 1
+    }
+}
+OnBarKey(wp, lp, msg, hwnd) {
+    global gScroll, gList
+    if (!gScroll || gScroll.dead || !gList || hwnd != gList.Hwnd)
+        return
+    if (gScroll.OnKey(wp))
+        return 1
+}
+
 ; ── GUI ────────────────────────────────────────────────────────────────
 ; 版式照 UI规范 §10.3：默认客户区 672×352。垂直节奏 TOP(12) → 列表区 → BLOCK_GAP(6)
 ; → 操作行(28) → BLOCK_GAP(6) → 状态条(30) → 贴窗口底。
 ; 窗口可缩放/最大化（长路径需要）：所有块由 Layout(cw,ch) 按客户区重算，
 ; 只有列表区吸收纵向余量、路径列吸收横向余量；按钮宽由文字宽定，永不被拉伸。
 BuildGui() {
-    global gGui, gList, gStatus, gInfo, gFrame, gBand, gHdrPath, gHdrType, gHdrOcc
-    global gStBand, gBtnUnlock, gBtnDel
+    global gGui, gList, gStatus, gInfo, gScroll
+    global gLvWhite, gLineTop, gLineBot, gLineLft, gLineRgt
+    global gBand, gHdrPath, gHdrType, gHdrOcc, gStBand, gBtnUnlock, gBtnDel
     global EDGE, ROW_W
-    gGui := Gui("+Resize +0x02000000", "文件解锁")   ; WS_CLIPCHILDREN：父窗口别刷在子控件上（防闪）
+    gGui := Gui("+Resize +0x02000000", "文件解锁")   ; WS_CLIPCHILDREN：父窗口别刷在子控件上
     gGui.BackColor := "F7F9FC"
     gGui.SetFont("s10", "Microsoft YaHei UI")
-    gGui.OnEvent("Close", (*) => ExitApp())
+    ; 自绘滚动条定时器必须先停，否则关窗后还会有一拍访问已销毁的列表（K21）。
+    gGui.OnEvent("Close", (*) => (gScroll ? gScroll.Stop() : 0, ExitApp()))
     gGui.OnEvent("DropFiles", OnDropFiles)
     gGui.OnEvent("Size", OnSize)
 
-    ; 列表区整体框：外框 → 标题带（内缩 1px）→ 列表（内缩 1px、紧贴标题带底）
-    gFrame := gGui.Add("Text", "x" EDGE " y12 w" ROW_W " h270 BackgroundB7C8E0")
+    ; 列表区：白底块 + 四边各一条 1px FRAME 线（§10.4 / K42）。
+    ; ★不能整块 B7C8E0 打底：原生条被摘掉后那块区域不重绘，底色会从缝里露出 16px 竖条。
+    ; 白底块让露出来的永远是白底，与列表同色看不见。
+    gLvWhite := gGui.Add("Text", "x" (EDGE + 1) " y13 w" (ROW_W - 2) " h" (270 - 2) " BackgroundFFFFFF")
+    gLineTop := gGui.Add("Text", "x" EDGE " y12 w" ROW_W " h1 BackgroundB7C8E0")
+    gLineBot := gGui.Add("Text", "x" EDGE " y281 w" ROW_W " h1 BackgroundB7C8E0")
+    gLineLft := gGui.Add("Text", "x" EDGE " y12 w1 h270 BackgroundB7C8E0")
+    gLineRgt := gGui.Add("Text", "x" (EDGE + ROW_W - 1) " y12 w1 h270 BackgroundB7C8E0")
+
     gBand := gGui.Add("Text", "x" (EDGE + 1) " y13 w" (ROW_W - 2) " h" H_HEADER " BackgroundDCE8F7")
     gGui.SetFont("s10 Bold", "Microsoft YaHei UI")
     gHdrPath := gGui.Add("Text", "x24 y13 w424 h" H_HEADER " BackgroundDCE8F7 c202B3A +0x200", "路径")
@@ -409,7 +699,8 @@ BuildGui() {
     gList := gGui.Add("ListView", "x" (EDGE + 1) " y" (13 + H_HEADER) " w" (ROW_W - 2)
         . " h" (270 - 2 - H_HEADER) " -Hdr -Multi -E0x200 BackgroundFFFFFF c202B3A"
         , ["路径", "类型", "占用程序"])
-    gList.ModifyCol(1, 430), gList.ModifyCol(2, 78), gList.ModifyCol(3, 128)
+    ; LVS_EX_DOUBLEBUFFER：滚动重绘走后台缓冲，避免整块重画闪一下（K44）。
+    DllCall("user32\SendMessageW", "Ptr", gList.Hwnd, "UInt", 0x1036, "Ptr", 0x10000, "Ptr", 0x10000)
 
     gInfo := gGui.Add("Text", "x" EDGE " y288 w474 h" H_ACTION " BackgroundF7F9FC c202B3A +0x200", "")
     gBtnUnlock := FlatButton(gGui, 506, 288, MeasureTextWidth("解除占用") + 32, H_ACTION
@@ -423,23 +714,21 @@ BuildGui() {
 
     gGui.Show("w672 h352 Center")
     PaintCaption()
+
+    ; 自绘滚动条：后四个数 = 列表可用内空（x/y/w/h），Show 后建、再 Layout。
+    gScroll := FlatScroll(gGui, gList, EDGE + 1, 13 + H_HEADER, ROW_W - 2, 270 - 2 - H_HEADER)
+    HookBarInput()
+    SetTimer(gScroll.fnSync, 60)
     Layout(672, 352)
 }
 
-; 缩放：按客户区重算所有块的位置与尺寸（Size 事件给的是客户区 w/h）
+; 缩放：按客户区重算所有块。★不再整窗 Redraw —— 那在拖边框时会整屏闪（K44/K47）。
+; 静态色块的背景走 WM_CTLCOLORSTATIC：只改几何不会重画，最大化后会停在旧宽度，
+; 但要逐个 InvalidateRect（第三参 0 = 不擦背景），整窗 Redraw 会闪。
 OnSize(guiObj, minMax, width, height) {
-    if (minMax = -1 || width < 1 || height < 1)
+    if (minMax = -1 || width < 1 || height < 1 || !IsObject(gScroll))
         return
     Layout(width, height)
-    ForceRepaint(guiObj.Hwnd)
-}
-
-; 拖拽边框时控件是逐个 Move 的，父窗口底下会留下没擦掉的旧痕迹（表现为"没及时重绘"）；
-; 每次重排后统一强制重画一次整窗（含子控件），并立即刷出，别等下一轮消息。
-ForceRepaint(hwnd) {
-    static RDW_INVALIDATE := 0x1, RDW_ERASE := 0x4, RDW_ALLCHILDREN := 0x80, RDW_UPDATENOW := 0x100
-    DllCall("user32\RedrawWindow", "Ptr", hwnd, "Ptr", 0, "Ptr", 0, "UInt"
-        , RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW, "Int")
 }
 
 ; 拖拽边框最小值（WM_GETMINMAXINFO，ptMinTrackSize 在 offset 24/28）
@@ -457,7 +746,8 @@ WM_GetMinMaxInfo(wParam, lParam, msg, hwnd) {
 
 Layout(cw, ch) {
     global EDGE, INLINE_GAP, BLOCK_GAP, H_ACTION, H_STATUS, H_HEADER
-    global gFrame, gBand, gHdrPath, gHdrType, gHdrOcc, gList, gInfo
+    global gLvWhite, gLineTop, gLineBot, gLineLft, gLineRgt
+    global gBand, gHdrPath, gHdrType, gHdrOcc, gList, gScroll, gInfo
     global gStBand, gStatus, gBtnUnlock, gBtnDel
     RIGHT := cw - EDGE
     ROW_W := cw - 2 * EDGE
@@ -468,9 +758,14 @@ Layout(cw, ch) {
     if (LIST_H < 60)
         LIST_H := 60
 
-    gFrame.Move(EDGE, LIST_Y, ROW_W, LIST_H)
+    ; 白底块 + 四边 1px 线：底块与线同 x/y/w/h，原生控件内缩 1px（K7）。
+    gLvWhite.Move(EDGE + 1, LIST_Y + 1, ROW_W - 2, LIST_H - 2)
+    gLineTop.Move(EDGE, LIST_Y, ROW_W, 1)
+    gLineBot.Move(EDGE, LIST_Y + LIST_H - 1, ROW_W, 1)
+    gLineLft.Move(EDGE, LIST_Y, 1, LIST_H)
+    gLineRgt.Move(EDGE + ROW_W - 1, LIST_Y, 1, LIST_H)
     gBand.Move(EDGE + 1, LIST_Y + 1, ROW_W - 2, H_HEADER)
-    ; 列头与列表列宽同步：状态列固定 122、类型列固定 72，路径列吸收余量
+    ; 列头与列表列宽同步：占用列固定 122、类型列固定 72，路径列吸收余量
     occX := RIGHT - 129
     typeX := occX - 76
     pathX := EDGE + 8
@@ -478,12 +773,16 @@ Layout(cw, ch) {
     gHdrPath.Move(pathX, LIST_Y + 1, pathW, H_HEADER)
     gHdrType.Move(typeX, LIST_Y + 1, 72, H_HEADER)
     gHdrOcc.Move(occX, LIST_Y + 1, 122, H_HEADER)
-    gList.Move(EDGE + 1, LIST_Y + 1 + H_HEADER, ROW_W - 2, LIST_H - 2 - H_HEADER)
-    ; 列宽与列头同步：路径列吃掉余量（632 = 客户区宽 − 34 边框 − 78 − 128 − 2 余量）
-    c1 := cw - 242
-    if (c1 < 120)
-        c1 := 120
-    gList.ModifyCol(1, c1), gList.ModifyCol(2, 78), gList.ModifyCol(3, 128)
+
+    ; 静态色块逐个失效（不擦背景）—— 只改几何不会触发重画，整窗 Redraw 会闪（K47）。
+    for c in [gLvWhite, gLineTop, gLineBot, gLineLft, gLineRgt, gBand, gHdrPath, gHdrType, gHdrOcc]
+        DllCall("user32\InvalidateRect", "Ptr", c.Hwnd, "Ptr", 0, "Int", 0)
+
+    ; 列表几何交给 gScroll：它按内容超出与否决定给竖条留 10px，再 Move 列表（K43）。
+    gScroll.x := EDGE + 1, gScroll.y := LIST_Y + 1 + H_HEADER
+    gScroll.w := ROW_W - 2, gScroll.h := LIST_H - 2 - H_HEADER
+    gScroll.Layout()
+    FixCols()
 
     xDel := RIGHT - gBtnDel.w
     xUn := xDel - INLINE_GAP - gBtnUnlock.w
@@ -493,6 +792,22 @@ Layout(cw, ch) {
 
     gStBand.Move(0, ST_Y, cw, H_STATUS)
     gStatus.Move(12, ST_Y, cw - 24, H_STATUS)
+    for c in [gStBand, gStatus, gInfo]
+        DllCall("user32\InvalidateRect", "Ptr", c.Hwnd, "Ptr", 0, "Int", 0)
+}
+
+; 列宽按「可视宽」分配：出现竖条时可视宽少 10px，路径列跟着收，否则长路径被裁。
+; 横向条撤掉，列宽做进视口（K30）。改列宽后必须整表 Redraw（K31：行底色停在旧列宽）。
+FixCols() {
+    global gList, gScroll
+    w := gScroll ? gScroll.ClientW() : 0
+    if (w <= 0)
+        return
+    c1 := w - 78 - 128 - 2
+    if (c1 < 120)
+        c1 := 120
+    gList.ModifyCol(1, c1), gList.ModifyCol(2, 78), gList.ModifyCol(3, 128)
+    try gList.Redraw()
 }
 
 ; 拖入：加入列表并逐项自动检测
@@ -584,13 +899,18 @@ DetectItem(it) {
 }
 
 RefreshList() {
-    global gList, gItems
+    global gList, gItems, gScroll
     gList.Delete()
     Loop gItems.Length {
         it := gItems[A_Index]
         if !IsObject(it)
             continue
         gList.Add("", it.path, it.kind, it.names)
+    }
+    ; Delete/Add 会把 WS_VSCROLL 样式位置回、原生条露出（K22/K36）：填完统一重算占位 + 摘条 + 重绘。
+    if IsObject(gScroll) {
+        gScroll.Layout()
+        FixCols()
     }
 }
 
