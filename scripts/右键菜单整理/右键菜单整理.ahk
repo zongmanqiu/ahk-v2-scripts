@@ -2,7 +2,7 @@
 ; @name         右键菜单整理
 ; @id           context-menu-tidy
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.2.2
+; @version      1.3.0
 ; @description  拖入文件/文件夹读出它的右键菜单，或看桌面空白/文件夹空白的菜单，逐项隐藏或调整位置，只写 HKCU 可恢复
 ; @author       邱宗满
 ; @date         2026-11-17
@@ -60,6 +60,7 @@ REG_DWORD          := 4
 REG_SZ             := 1
 MISSING            := "__ahkdeck_context_tidy_missing__"
 HIDE_MARK          := "ProgrammaticAccessOnly"
+SENDTO_CLSID       := "{7BA4C740-9E81-11CF-99D3-00AA004AE837}"
 VEL_HIDE_VALUE     := 6527944           ; 0x639bc8
 BLOCK_PATH         := "Software\Microsoft\Windows\CurrentVersion\Shell Extensions\Blocked"
 
@@ -112,7 +113,8 @@ FriendlyClsids() => Map(
     "{BFE0E2A4-C70C-4AD7-AC3D-10D1ECEBB5B4}", "使用照片编辑",
     "{7AD84985-87B4-4a16-BE58-8B72A5B390F7}", "投射到设备",
     "{E2BF9676-5F8F-435C-97EB-11607A5BEDF7}", "共享",
-    "{3D1975AF-48C6-4f8e-A182-BE0E08FA86A9}", "NVIDIA 控制面板"
+    "{3D1975AF-48C6-4f8e-A182-BE0E08FA86A9}", "NVIDIA 控制面板",
+    "{1762508c-62c7-4eb9-aa6c-268421c050fa}", "上传至ima知识库"
 )
 
 ; 静态 verb 的 shell 内建名：键值全空的 verb（open 等）真实菜单显示这些词，
@@ -158,6 +160,10 @@ NormalizePos(v) {
 
 IsIndirectString(s) => (s != "" && SubStr(s, 1, 1) = "@")
 IsProtectedVerb(v) => (v = "open" || v = "edit")
+
+; 「打开」系内建动词：真实右键菜单把它们固定摆在前几行（打开 / 在新窗口中打开 / 固定到快速访问）。
+IsShellBuiltinVerb(v) => (v = "open" || v = "opennewwindow" || v = "opennewtab"
+    || v = "opennewprocess" || v = "explore" || v = "pintohome")
 ShadowKey(suffix, verb) => "HKCU\Software\Classes\" suffix "\shell\" verb
 
 ; 文件对象的来源根：通用项 + 扩展名键 + ProgID。
@@ -286,7 +292,9 @@ VerbLabel(root, path, verb) {
     base := path "\" verb
     raw := RegGet(root, base, "MUIVerb", MISSING)
     if (raw = MISSING || raw = "")
-        raw := RegGet(root, base, "", verb)
+        ; 默认值不存在时必须回 MISSING：若把默认值写成 verb，下面永远拿到 "open"，
+        ; 内建名兜底就永远走不到（1.3.0 实测）。
+        raw := RegGet(root, base, "", MISSING)
     if (raw = MISSING || raw = "")
         return BuiltinFallback(verb)
     if IsIndirectString(raw) {
@@ -299,7 +307,7 @@ VerbLabel(root, path, verb) {
         }
         return BuiltinFallback(verb)
     }
-    return raw
+    return BuiltinFallback(raw)
 }
 
 ; COM 项：读 handler 默认值拿 CLSID，再读 CLSID 键默认值当显示名候选。
@@ -329,12 +337,17 @@ NotifyAssocChanged() =>
 ; ── 全局状态 ────────────────────────────────────────────────────────────
 global gGui := 0, gList := 0, gStatus := 0, gNavBtns := []
 global gItems := [], gScene := 1, gScroll := 0
+; 过滤后 ListView 行号与 gItems 的下标不再一一对应，另存一份「行号 -> 项」。
+global gRowMap := []
 global gDropPath := ""
+; 只留真实右键菜单里会出现的项（state=show 且不带 Extended）：
+; 默认开——用户要"只看到现存的项"，过滤后项数与真实菜单基本对齐。
+global gOnlyVisible := 1
 
 ; ── 数据层 ──────────────────────────────────────────────────────────────
 ; 合并多个来源：同一 verb / CLSID 只出一行，roots 记下全部来源，隐藏时逐根写。
 MakeItems(scene) {
-    items := [], seenVerb := Map(), seenCom := Map()
+    items := [], seenVerb := Map(), seenCom := Map(), seenComLabel := Map()
     roots := SceneRoots(scene.key, gDropPath)
     for root in roots {
         ; L1 静态 verb
@@ -351,8 +364,10 @@ MakeItems(scene) {
                 continue
             }
             seenVerb[verb] := items.Length + 1
+            ; Extended = 只在按住 Shift 时才出现，与隐藏标记一样默认不该露出来。
+            ext := RegGet(HKEY_CLASSES_ROOT, root "\shell\" verb, "Extended", MISSING) != MISSING
             items.Push({ layer: "verb", key: verb, label: VerbLabel(HKEY_CLASSES_ROOT, root "\shell", verb)
-                       , state: state, pos: pos, src: "静态", roots: [root] })
+                       , state: state, pos: pos, src: "静态", roots: [root], extended: ext })
         }
         ; L2 COM 扩展
         for name in EnumSubkeys(HKEY_CLASSES_ROOT, root "\shellex\ContextMenuHandlers") {
@@ -363,50 +378,145 @@ MakeItems(scene) {
                 continue
             }
             seenCom[guid] := items.Length + 1
+            ; 同一功能常有两代 CLSID（PintoStartScreen / StartMenuPin 都叫「固定到“开始”屏幕」），
+            ; 显示名一模一样就并成一行：keys 记住全部 CLSID，隐藏时逐个写 Blocked。
+            if seenComLabel.Has(ci.label) {
+                itt := items[seenComLabel[ci.label]]
+                itt.keys.Push(guid)
+                itt.roots.Push(root)
+                continue
+            }
+            seenComLabel[ci.label] := items.Length + 1
             items.Push({ layer: "com", key: guid, name: name, label: ci.label
-                       , state: ComBlockedState(guid), pos: ""
-                       , src: "COM", roots: [root], shared: IsSharedClsid(guid) })
+                       , state: ComBlockedState(guid), pos: "", keys: [guid]
+                       , src: "COM", roots: [root], shared: IsSharedClsid(guid), extended: false })
         }
     }
-    ; shell 真实顺序：置顶在最前、置底在最后、其余按注册枚举序（分桶拼接即稳定）。
-    top := [], mid := [], bot := []
+    ; shell 真实顺序（本机能对齐的部分）：置顶最前、置底最后，其余分两段——
+    ; ①「打开」系内建动词（open / opennewwindow / opennewtab / explore / pintohome）
+    ;   真实菜单永远摆在最上面；
+    ; ② 其余静态与 COM 扩展按注册枚举序。
+    ; COM 项的实际先后由各 DLL 的 QueryContextMenu 插入位决定，注册表无此信息，
+    ; 这部分对齐不了（HISTORY 1.3.0 记录了实测结论）。
+    top := [], builtin := [], mid := [], bot := []
     for it in items {
         if (it.pos = "top")
             top.Push(it)
         else if (it.pos = "bottom")
             bot.Push(it)
+        else if (it.layer = "verb" && IsShellBuiltinVerb(it.key))
+            builtin.Push(it)
         else
             mid.Push(it)
     }
+    ; 「打开」必须是第一行。
+    for i, it in builtin.Clone() {
+        if (it.key = "open") {
+            builtin.RemoveAt(i)
+            builtin.InsertAt(1, it)
+            break
+        }
+    }
     out := []
-    for bucket in [top, mid, bot]
+    for bucket in [top, builtin, mid, bot]
         for it in bucket
             out.Push(it)
+    ; SendTo 的子菜单项是真实存在的二级内容（数据源 = SendTo 文件夹），
+    ; 紧跟在「发送到」行后面缩进列出；其余子菜单（7-Zip / 包含到库中 / 授予访问权限）
+    ; 由 DLL 动态生成，注册表无数据源，无法列出。
+    for i, it in out.Clone() {
+        if (it.layer = "com" && it.key = SENDTO_CLSID) {
+            subs := SendToChildren()
+            j := 0
+            for s in subs {
+                out.InsertAt(i + 1 + j, s)
+                j++
+            }
+            break
+        }
+    }
     return out
 }
 
+; 子项（「发送到」的二级）只在父项本身可见时才有意义。
+ParentVisible(items) {
+    for it in items {
+        if (it.layer = "com" && it.key = SENDTO_CLSID)
+            return VisibleItem(it)
+    }
+    return false
+}
+
+; 只读展示：SendTo 文件夹里的每一项就是「发送到」子菜单的一项。
+SendToChildren() {
+    dir := EnvGet("APPDATA") "\Microsoft\Windows\SendTo"
+    subs := []
+    if !DirExist(dir)
+        return subs
+    loop files, dir "\*.*" {
+        name := A_LoopFileName
+        if (name = "desktop.ini")
+            continue
+        subs.Push({ layer: "sub", key: "", label: "      · " CleanSendToName(name)
+                  , state: "sub", pos: "", src: "发送到", roots: [], extended: false })
+    }
+    return subs
+}
+
+; 「压缩(zipped)文件夹」这类是 .ZFSendToTarget / .DeskLink / .mydocs 之类的
+; shell 特殊后缀，真实菜单只显示前缀；.lnk 也去掉扩展名。
+CleanSendToName(file) {
+    SplitPath(file, , , &ext)
+    if (ext = "")
+        return file
+    return SubStr(file, 1, StrLen(file) - StrLen(ext) - 1)
+}
+
+; 这一项会不会真的出现在右键菜单里：本脚本没隐藏、系统没有隐藏标记、也不是 Extended。
+VisibleItem(it) {
+    if (it.layer = "sub")
+        return true        ; 子项是否列出由父项「发送到」的可见性决定
+    return it.state = "show" && !it.extended
+}
+
 RefreshItems() {
-    global gList, gStatus, gItems, gScene, gScroll, gDropPath
+    global gList, gStatus, gItems, gScene, gScroll, gDropPath, gOnlyVisible, gToggleBtn, gRowMap
     scene := SceneDefs()[gScene]
     gItems := MakeItems(scene)
     gList.Delete()
-    nVerb := 0, nCom := 0, nHide := 0, nSys := 0
+    gRowMap := []
+    nVerb := 0, nCom := 0, nHide := 0, nSys := 0, nShown := 0
     for it in gItems {
-        st := it.state = "show" ? "显示" : it.state = "hidden" ? "已隐藏" : "系统隐藏"
-        ps := it.layer = "com" ? "—" : it.pos = "top" ? "置顶" : it.pos = "bottom" ? "置底" : "默认"
-        gList.Add("", it.label, it.src, st, ps)
         if (it.layer = "verb")
             nVerb++
-        else
+        else if (it.layer = "com")
             nCom++
         if (it.state = "hidden")
             nHide++
         if (it.state = "syshidden")
             nSys++
+        ; 子项跟随父项：父项被过滤时整组不出现。
+        if (gOnlyVisible && it.layer = "sub" && !ParentVisible(gItems))
+            continue
+        if (gOnlyVisible && !VisibleItem(it))
+            continue
+        if (it.layer = "sub")
+            st := ""
+        else
+            st := it.state = "show" ? "显示" : it.state = "hidden" ? "已隐藏" : "系统隐藏"
+        if (it.layer = "sub" || it.layer = "com")
+            ps := "—"
+        else
+            ps := it.pos = "top" ? "置顶" : it.pos = "bottom" ? "置底" : "默认"
+        gList.Add("", it.label, it.src, st, ps)
+        gRowMap.Push(it)
+        nShown++
     }
     scope := scene.key = "obj" ? (gDropPath != "" ? "拖入对象 · " gDropPath : "拖入对象（待拖入）")
                                : scene.name
-    gStatus.Value := scope " · verb " nVerb " 项 / COM " nCom " 项 · 已隐藏 " nHide " · 系统隐藏 " nSys
+    tail := gOnlyVisible ? " · 仅列可见项" : " · 列出全部项"
+    gStatus.Value := scope " · 显示 " nShown " 项（verb " nVerb " / COM " nCom "）· 已隐藏 "
+        . nHide " · 系统隐藏 " nSys tail
     ; Delete/Add 会把 WS_VSCROLL 样式位置回、原生条露出（K22/K36）：填完统一重算占位+摘条。
     if (gScroll && !gScroll.dead) {
         gScroll.Layout()
@@ -417,14 +527,25 @@ RefreshItems() {
         ; 同步重画 ListView 会盖掉自绘滑块（Z 序在 ListView 之下），补画一次。
         gScroll.Paint()
     }
+    ; 列表重建后没有选中项，切换按钮回默认文案。
+    SyncToggleLabel()
 }
 
+; 操作对象 = 列表里的选中项（用户点一下就是它）。AHK 的 ListView.GetNext 只认
+; "C"/"F" 不接受 "S"（1.3.0 踩过：第二参数非法，异常被事件层吞成"按钮没反应"），
+; 所以直接用 LVM_GETNEXTITEM(-1, LVNI_SELECTED) 取选中行，焦点项只作后备。
+; 两样都没有就返回 0，绝不默默拿第一行去改注册表。
 SelectedItem() {
-    global gList, gItems
-    r := gList.GetNext(0, "F")
+    global gList, gRowMap
+    r := DllCall("user32\SendMessageW", "Ptr", gList.Hwnd, "UInt", 0x100C
+        , "Ptr", -1, "Ptr", 0x0002, "Ptr")      ; LVNI_SELECTED = 2
+    if (r = -1 || r = 0xFFFFFFFF)
+        r := 0
+    else
+        r += 1                                   ; LVM 返回 0-based
     if !r
-        r := gList.GetNext(0)
-    return r ? gItems[r] : 0
+        r := gList.GetNext(0, "F")               ; 键盘 Tab 进列表时只有焦点
+    return (r && r <= gRowMap.Length) ? gRowMap[r] : 0
 }
 
 ; ── 写操作 ──────────────────────────────────────────────────────────────
@@ -442,8 +563,64 @@ WriteVerbMarks(roots, verb, action, pos := "") {
             }
         } catch
             errs++
+        ; 恢复完顺手把空壳键删掉：留着空 shell 键，shell 会多列一个没有命令的菜单项。
+        ; 键里还有别的值（比如刚写的 Position）时 RegDelete 会失败，属正常，忽略。
+        try RegDelete key
     }
     return errs
+}
+
+; 一个按钮两态：选中项现在能看见就显示「隐藏」，已隐藏就显示「显示」。
+ToggleSelected() {
+    global gStatus
+    it := SelectedItem()
+    if !it {
+        gStatus.Value := "先在列表里选中一个菜单项"
+        return
+    }
+    if (it.layer = "sub") {
+        gStatus.Value := "「" it.label "」是「发送到」的二级项，只读展示、不可操作"
+        return
+    }
+    SetHide(it.state = "show")
+}
+
+; 上移 = Position(top)，下移 = Position(bottom)；已在同一档再点一次 = 取消回默认。
+TogglePos(pos) {
+    global gStatus
+    it := SelectedItem()
+    if !it {
+        gStatus.Value := "先在列表里选中一个菜单项"
+        return
+    }
+    if (it.layer != "verb") {
+        gStatus.Value := "COM 项与二级项不支持位置调整"
+        return
+    }
+    SetPos(it.pos = pos ? "default" : pos)
+}
+
+SetOnlyVisible(on) {
+    global gOnlyVisible
+    gOnlyVisible := on ? 1 : 0
+    RefreshItems()
+}
+
+; 选中项变了，切换按钮的文案跟着变（ListView 的 ItemFocus 事件）。
+SyncToggleLabel() {
+    global gToggleBtn, gStatus
+    if (!gToggleBtn)
+        return
+    it := SelectedItem()
+    if !it {
+        gToggleBtn.Value := "隐藏"
+        return
+    }
+    if (it.layer = "sub") {
+        gToggleBtn.Value := "隐藏"
+        return
+    }
+    gToggleBtn.Value := it.state = "show" ? "隐藏" : "显示"
 }
 
 SetHide(on) {
@@ -451,6 +628,10 @@ SetHide(on) {
     it := SelectedItem()
     if !it {
         gStatus.Value := "先在列表里选中一个菜单项"
+        return
+    }
+    if (it.layer = "sub") {
+        gStatus.Value := "「" it.label "」是「发送到」的二级项，只读展示、不可操作"
         return
     }
     if (it.layer = "verb" && IsProtectedVerb(it.key)) {
@@ -473,13 +654,14 @@ SetHide(on) {
     } else {
         ; COM：Blocked 键按 CLSID 写/删（HKCU，零提权；全局生效，与来源个数无关）
         try {
-            if on {
-                RegWrite "", "REG_SZ", "HKCU\" BLOCK_PATH, it.key
-                gStatus.Value := "已隐藏 COM 扩展「" it.label "」（全局生效）"
-            } else {
-                RegDelete "HKCU\" BLOCK_PATH, it.key
-                gStatus.Value := "已恢复 COM 扩展「" it.label "」"
+            for k in it.keys {
+                if on
+                    RegWrite "", "REG_SZ", "HKCU\" BLOCK_PATH, k
+                else
+                    RegDelete "HKCU\" BLOCK_PATH, k
             }
+            gStatus.Value := (on ? "已隐藏 COM 扩展「" : "已恢复 COM 扩展「") it.label "」"
+                . (it.keys.Length > 1 ? "（含 " it.keys.Length " 个注册项）" : "（全局生效）")
         } catch as e {
             gStatus.Value := "操作失败 · " e.Message
             return
@@ -520,6 +702,45 @@ SetPos(pos) {
 ; 原生条由 comctl32 主题引擎绘制，脚本拿不到颜色；ShowScrollBar(FALSE) 只是「按需隐藏」，
 ; Move/Add/Delete/ModifyCol/LVM_SCROLL 都会把样式位置回，所以每次动作后补一刀 + Sync 兜底。
 ; 横向条撤掉，列宽做进视口。
+; 系统 CheckBox 在宿主里是经典黑勾方框，样式位去不掉，改成三层 Text 色块自绘
+; （配方同《文件时间修改》1.5.x）：Value 保持 0/1，方框与文字都能点。
+class FlatCheck {
+    __New(g, x, y, w, h, text, checked := false) {
+        this.Value := checked ? 1 : 0
+        this.cb := 0
+        boxY := y + (h - 16) // 2
+        ; 同 FlatButton：16x16 描边框先建、14x14 填充块后建（Z 序在上，✓ 才看得见），
+        ; 两块都挂 Click（宿主命中按创建序，先中的是框）。
+        this.frame := g.Add("Text", "x" x " y" boxY " w16 h16 BackgroundB7C8E0")
+        this.fill := g.Add("Text", "x" (x + 1) " y" (boxY + 1) " w14 h14 +0x200 Center", "")
+        this.fill.SetFont("s11 Bold", "Microsoft YaHei UI")
+        this.label := g.Add("Text", "x" (x + 22) " y" y " w" (w - 22) " h" h
+            " BackgroundF7F9FC c202B3A +0x200", text)
+        this.Paint()
+        for c in [this.frame, this.fill, this.label]
+            c.OnEvent("Click", (*) => this.Toggle())
+    }
+    Paint() {
+        if (this.Value) {
+            this.fill.Opt("BackgroundEBF2FB c202B3A")
+            this.fill.Value := "✓"
+        } else {
+            this.fill.Opt("BackgroundFFFFFF c202B3A")
+            this.fill.Value := ""
+        }
+    }
+    Toggle() {
+        this.Value := !this.Value
+        this.Paint()
+        if (this.cb)
+            this.cb.Call()
+    }
+    OnEvent(name, cb) {
+        if (name = "Click")
+            this.cb := cb
+    }
+}
+
 class FlatScroll {
     __New(g, lv, x, y, w, h, t := 10) {
         this.g := g, this.lv := lv
@@ -791,6 +1012,10 @@ PaintCaption() {
     }
 }
 
+; 按钮 = 描边框 f + 文字块 b。这里有两套独立的顺序，混淆过一次（1.3.0）：
+;   · 绘制按 Z 序（后建者在上）→ f 必须先建、b 后建，否则实心框把文字盖白；
+;   · 宿主命中（RealChildWindowFromPoint）按创建序（先建者先中）→ 点到的是 f，
+;     所以 f 也得挂 Click，两个控件都接回调才稳妥。
 FlatButton(g, x, y, w, h, text, cb, fill := "EBF2FB", edge := "B7C8E0") {
     f := g.Add("Text", "x" x " y" y " w" w " h" h " Background" edge)
     b := g.Add("Text", "x" (x + 1) " y" (y + 1) " w" (w - 2) " h" (h - 2)
@@ -820,7 +1045,7 @@ OnDropFiles(guiObj, ctrlObj, files, x, y) {
 }
 
 BuildGui() {
-    global gGui, gList, gStatus, gNavBtns, gScroll
+    global gGui, gList, gStatus, gNavBtns, gScroll, gToggleBtn, gCheck
     gGui := Gui("", "右键菜单整理")
     gGui.BackColor := "F7F9FC"
     gGui.SetFont("s10", "Microsoft YaHei UI")
@@ -880,12 +1105,18 @@ BuildGui() {
     gList.ModifyCol(4, COL_POS_W)
     DllCall("user32\SendMessageW", "Ptr", gList.Hwnd, "UInt", 0x1036, "Ptr", 0x10000, "Ptr", 0x10000)
 
-    FlatButton(gGui, 172, BTN_Y, 64, BTN_H, "隐藏", () => SetHide(true))
-    FlatButton(gGui, 244, BTN_Y, 64, BTN_H, "显示", () => SetHide(false))
-    FlatButton(gGui, 332, BTN_Y, 64, BTN_H, "置顶", () => SetPos("top"))
-    FlatButton(gGui, 404, BTN_Y, 64, BTN_H, "置底", () => SetPos("bottom"))
-    FlatButton(gGui, 492, BTN_Y, 88, BTN_H, "恢复位置", () => SetPos("default"))
+    ; 按钮只留四件事：状态切换（一个按钮两态）、上移、下移、刷新（1.3.0 用户定案）。
+    ; 「上移/下移」写的是 shell 的 Position=top/bottom 两档；已是该档再点一次就取消回默认，
+    ; 这样不需要单独的「恢复位置」按钮。
+    gToggleBtn := FlatButton(gGui, 172, BTN_Y, 88, BTN_H, "隐藏", (*) => ToggleSelected())
+    FlatButton(gGui, 268, BTN_Y, 64, BTN_H, "上移", (*) => TogglePos("top"))
+    FlatButton(gGui, 340, BTN_Y, 64, BTN_H, "下移", (*) => TogglePos("bottom"))
     FlatButton(gGui, 600, BTN_Y, 64, BTN_H, "刷新", (*) => RefreshItems())
+
+    ; 「隐藏不可见项」默认勾上：只看真实菜单里会出现的项。
+    gCheck := FlatCheck(gGui, 676, BTN_Y, 128, BTN_H, "隐藏不可见项", gOnlyVisible)
+    gCheck.OnEvent("Click", (*) => SetOnlyVisible(gCheck.Value))
+    gList.OnEvent("ItemFocus", (*) => SyncToggleLabel())
 
     gGui.Add("Text", "x0 y" STATUS_Y " w" WIN_W " h" STATUS_H " BackgroundDCE8F7")
     gStatus := gGui.Add("Text", "x12 y" STATUS_Y " w" (WIN_W - 24) " h" STATUS_H
@@ -909,15 +1140,38 @@ if (A_Args.Length && A_Args[1] = "--selftest")
 ;   verb:  --probe verb  <根suffix> <verb名> <hide|show|top|bottom|default>
 ;   com:   --probe com   <CLSID>    <hide|show>
 ;   roots: --probe roots <场景key> <结果文件> [拖入路径] → 该场景展开的位置根（逗号分隔）
+;   items: --probe items <场景key> <结果文件> [拖入路径] → 该场景合并后的行（layer|显示名|来源|状态|位置|可见）
 if (A_Args.Length >= 3 && A_Args[1] = "--probe") {
     if (A_Args[2] = "roots" && A_Args.Length >= 4)
         ProbeRoots(A_Args[3], A_Args.Length >= 5 ? A_Args[5] : "", A_Args[4])
+    else if (A_Args[2] = "items" && A_Args.Length >= 4)
+        ProbeItems(A_Args[3], A_Args.Length >= 5 ? A_Args[5] : "", A_Args[4])
     else if (A_Args.Length >= 4 && A_Args[2] = "verb" && A_Args.Length >= 5)
         ProbeVerb(A_Args[3], A_Args[4], A_Args[5])
     else if (A_Args.Length >= 4 && A_Args[2] = "com")
         ProbeCom(A_Args[3], A_Args[4])
     else
         throw ValueError("probe 参数不对")
+    ExitApp(0)
+}
+
+; 行列表探针：把 MakeItems 的结果逐行写出，供 test/run.py 断言
+; 「拖入场景到底列出什么」——拖放本身没法用 MCP 模拟，只能走这条。
+ProbeItems(sceneKey, dropPath, outPath) {
+    global gDropPath
+    gDropPath := dropPath
+    items := MakeItems({ key: sceneKey })
+    out := ""
+    for it in items {
+        vis := VisibleItem(it) ? "1" : "0"
+        out .= it.layer "|" it.label "|" it.src "|" it.state "|" it.pos "|" vis "`n"
+    }
+    if (pos := InStr(outPath, "\", false, -1), p2 := InStr(outPath, "/", false, -1))
+        pos := Max(pos, p2)
+    if (pos > 1)
+        try DirCreate(SubStr(outPath, 1, pos - 1))
+    try FileDelete outPath
+    FileAppend(out, outPath, "UTF-8")
     ExitApp(0)
 }
 
@@ -982,7 +1236,17 @@ RunSelfTest(path) {
     Chk(BuiltinFallback("open") = "打开" && BuiltinFallback("runas") = "以管理员身份运行"
         && BuiltinFallback("zzz") = "zzz", "内建 verb 名兜底", &out, &fails)
     Chk(FriendlyClsids()["{7BA4C740-9E81-11CF-99D3-00AA004AE837}"] = "发送到"
-        && FriendlyClsids()["{D969A300-E7FF-11d0-A93B-00A0C90F2719}"] = "新建", "COM 友好名映射", &out, &fails)
+        && FriendlyClsids()["{D969A300-E7FF-11d0-A93B-00A0C90F2719}"] = "新建"
+        && FriendlyClsids()["{1762508c-62c7-4eb9-aa6c-268421c050fa}"] = "上传至ima知识库"
+        , "COM 友好名映射", &out, &fails)
+    Chk(VisibleItem({ layer: "com", state: "show", extended: false })
+        && !VisibleItem({ layer: "verb", state: "show", extended: true })
+        && !VisibleItem({ layer: "verb", state: "syshidden", extended: false })
+        && !VisibleItem({ layer: "verb", state: "hidden", extended: false })
+        , "不可见判定：Extended/已隐藏/系统隐藏都算不可见", &out, &fails)
+    Chk(CleanSendToName("Compressed (zipped) Folder.ZFSendToTarget") = "Compressed (zipped) Folder"
+        && CleanSendToName("ALTRun.lnk") = "ALTRun"
+        && CleanSendToName("Readme") = "Readme", "SendTo 子项名去扩展名", &out, &fails)
     Chk(IsIndirectString("@shell32.dll,-8506") && !IsIndirectString("在此处打开"), "间接串识别", &out, &fails)
     Chk(IsProtectedVerb("open") && IsProtectedVerb("edit") && !IsProtectedVerb("cmd"), "保护 open/edit 动词", &out, &fails)
     Chk(ShadowKey("*", "cmd") = "HKCU\Software\Classes\*\shell\cmd", "verb 影子键只落在 HKCU", &out, &fails)
