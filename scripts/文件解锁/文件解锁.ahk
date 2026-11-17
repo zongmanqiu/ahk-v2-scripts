@@ -2,7 +2,7 @@
 ; @name         文件解锁
 ; @id           file-unlock
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.1.1
+; @version      1.1.2
 ; @description  拖入文件或文件夹，自动检测占用，一键解除占用或删除（含保留名/权限受限文件）
 ; @author       邱宗满
 ; @date         2026-11-17
@@ -74,12 +74,26 @@ CRITICAL_PROCS := Map("smss.exe", 1, "csrss.exe", 1, "wininit.exe", 1, "winlogon
 gGui := 0, gList := 0, gStatus := 0, gInfo := 0
 gItems := []          ; [{path, isDir, owners:[pid], names:"进程名列表"}]，每行对应一项
 
-; ── 占用检测：DELETE+全共享试探开（文件夹加 BACKUP_SEMANTICS）──────────
+; ── 文件系统属性判断（一律走 \\?\ 直通；FileExist 对 junction/保留名不可靠）──
+FileAttrs(path) {
+    return DllCall("kernel32\GetFileAttributesW", "Str", NtPath(path), "UInt")
+}
+IsDirPath(path) {
+    a := FileAttrs(path)
+    return (a != 0xFFFFFFFF && (a & 0x10))          ; FILE_ATTRIBUTE_DIRECTORY
+}
+IsLinkPath(path) {
+    a := FileAttrs(path)
+    return (a != 0xFFFFFFFF && (a & FILE_ATTRIBUTE_REPARSE_POINT))
+}
+
+; ── 占用/权限状态：DELETE+全共享试探开（文件夹加 BACKUP_SEMANTICS）──────
 ; 关键：一律用 \\?\ 直通路径打开。否则 nul/con 等保留名会被 Win32 解析成设备，
 ; 试探开/FPIF 会把一堆无关进程当成占用者（实测 nul 误报几十个 PID）。
-IsLocked(path) {
-    isDir := (FileExist(path) = "D")
-    flags := 0x80 | (isDir ? FILE_FLAG_BACKUP_SEMANTICS : 0)
+; 返回分类："" 可删（未占用且有权限）；"locked" 被进程占用（32/33）；
+;           "denied" 无权限（5，ACL 拒绝，与占用是两回事）；"gone" 不存在；"err<码>" 其他。
+FSState(path) {
+    flags := 0x80 | (IsDirPath(path) ? FILE_FLAG_BACKUP_SEMANTICS : 0)
     h := DllCall("kernel32\CreateFileW", "Str", NtPath(path), "UInt", DELETE_ACCESS
         , "UInt", FILE_SHARE_ALL, "Ptr", 0, "UInt", 3   ; OPEN_EXISTING
         , "UInt", flags, "Ptr", 0, "Ptr")
@@ -89,27 +103,24 @@ IsLocked(path) {
     }
     e := A_LastError
     if (e = ERROR_FILE_NOT_FOUND || e = ERROR_PATH_NOT_FOUND)
-        return ""                              ; 不存在（已删/设备名），不算占用
-    if (e = ERROR_SHARING_VIOLATION)
-        return "共享冲突(32)"
-    if (e = ERROR_LOCK_VIOLATION)
-        return "字节锁(33)"
+        return "gone"                           ; 不存在（已删/设备名），不算占用
+    if (e = ERROR_SHARING_VIOLATION || e = ERROR_LOCK_VIOLATION)
+        return "locked"                         ; 32/33 = 真的被进程占用
     if (e = ERROR_ACCESS_DENIED)
-        return "拒绝访问(5)"
-    return "无法打开(" e ")"
+        return "denied"                         ; 5 = ACL 拒绝，不是占用
+    return "err" e
 }
 
-; 判断路径是否真的被进程占用（用于状态显示）：试探开失败即视为占用。
+; 仅"被进程占用"才算 locked；无权限/不存在都不算（避免误导用户去解占用）。
 PathLocked(path) {
-    return IsLocked(path) != ""
+    return FSState(path) = "locked"
 }
 
 ; ── 找占用者：NtQueryInformationFile(FileProcessIdsUsingFileInformation) ─
 ; 同样用 \\?\ 直通路径，避免保留名被解析成设备而误报一堆 PID。
 FindOwners(path) {
     pids := []
-    isDir := (FileExist(path) = "D")
-    flags := 0x80 | (isDir ? FILE_FLAG_BACKUP_SEMANTICS : 0)
+    flags := 0x80 | (IsDirPath(path) ? FILE_FLAG_BACKUP_SEMANTICS : 0)
     h := DllCall("kernel32\CreateFileW", "Str", NtPath(path), "UInt", READ_ATTR
         , "UInt", FILE_SHARE_ALL, "Ptr", 0, "UInt", 3, "UInt", flags, "Ptr", 0, "Ptr")
     if (h = INVALID_HANDLE_VALUE || h = 0)
@@ -131,23 +142,6 @@ FindOwners(path) {
         }
     } finally
         DllCall("kernel32\CloseHandle", "Ptr", h)
-    return pids
-}
-
-; ── 某个路径（文件或文件夹递归）的所有占用进程 PID ─────────────────────
-OwnersOfPath(path) {
-    pidSet := Map()
-    files := []
-    CollectFiles(path, files)
-    for f in files {
-        if !PathLocked(f)
-            continue
-        for pid in FindOwners(f)
-            pidSet[pid] := 1
-    }
-    pids := []
-    for pid in pidSet
-        pids.Push(pid)
     return pids
 }
 
@@ -185,16 +179,24 @@ KillProcess(pid, name) {
 }
 
 ; ── 递归收集文件夹下的文件（文件夹本身也作为一项）─────────────────────
+; 遇 reparse point（junction/symlink）只收链接本身，绝不递归进目标——否则会把
+; 目标目录里一堆无关文件算进来，删除时也可能误伤。用属性判断，不用 FileExist。
 CollectFiles(path, out, depth := 0) {
     if (depth > 32)
         return
-    attr := FileExist(path)
-    if (attr = "D") {
+    a := FileAttrs(path)
+    if (a = 0xFFFFFFFF)
+        return
+    if (a & 0x10) {                                  ; 目录
+        if (a & FILE_ATTRIBUTE_REPARSE_POINT) {
+            out.Push(path)                           ; 链接：只算它自己
+            return
+        }
         Loop Files path "\*", "F"
             out.Push(A_LoopFilePath)
         Loop Files path "\*", "D"
             CollectFiles(A_LoopFilePath, out, depth + 1)
-    } else if attr {
+    } else {
         out.Push(path)
     }
 }
@@ -284,10 +286,12 @@ DeleteDirTree(path) {
 CollectDirsOnly(path, out, depth) {
     if (depth > 32)
         return
-    if (FileExist(path) != "D")
+    if !IsDirPath(path)
         return
     Loop Files path "\*", "D" {
         out.Push(A_LoopFilePath)
+        if IsLinkPath(A_LoopFilePath)
+            continue                    ; junction 只收它自己，不进目标
         CollectDirsOnly(A_LoopFilePath, out, depth + 1)
     }
 }
@@ -419,9 +423,9 @@ OnDropFiles(guiObj, ctrlObj, files, x, y) {
     for path in files {
         if ItemIndex(path) > 0
             continue
-        isDir := (FileExist(path) = "D")
-        gItems.Push({ path: path, isDir: isDir, owners: [], names: "检测中…" })
-        gList.Add("", path, isDir ? "文件夹" : "文件", "检测中…")
+        kind := KindOf(path)
+        gItems.Push({ path: path, isDir: (kind != "文件"), kind: kind, owners: [], names: "检测中…" })
+        gList.Add("", path, kind, "检测中…")
         added++
     }
     if !added
@@ -446,38 +450,50 @@ ItemIndex(path) {
     return 0
 }
 
-; 检测单个项：展开其下文件，得出占用进程
+; 路径类型：链接 / 文件夹 / 文件（用属性判断，FileExist 对 junction/保留名不可靠）
+KindOf(path) {
+    a := FileAttrs(path)
+    if (a = 0xFFFFFFFF)
+        return "文件"
+    if (a & FILE_ATTRIBUTE_REPARSE_POINT)
+        return "链接"
+    return (a & 0x10) ? "文件夹" : "文件"
+}
+
+; 检测单个项：展开其下文件，区分「被占用 / 无权限 / 未占用」
 DetectItem(it) {
     files := []
     CollectFiles(it.path, files)
+    if !files.Length {
+        it.owners := []
+        it.names := "不存在"
+        return
+    }
     pidSet := Map()
+    lockedCount := 0
+    deniedCount := 0
     for f in files {
-        if !PathLocked(f)
-            continue
-        for pid in FindOwners(f)
-            pidSet[pid] := 1
+        st := FSState(f)
+        if (st = "locked") {
+            lockedCount++
+            for pid in FindOwners(f)
+                pidSet[pid] := 1
+        } else if (st = "denied") {
+            deniedCount++
+        }
     }
     it.owners := []
     names := ""
     for pid in pidSet {
         it.owners.Push(pid)
-        nm := ProcName(pid)
-        names .= (names ? ", " : "") nm
+        names .= (names ? ", " : "") ProcName(pid)
     }
-    ; 未识别到进程但有占用，也要标注
-    locked := false
-    for f in files {
-        if PathLocked(f) {
-            locked := true
-            break
-        }
-    }
-    if (!locked)
-        it.names := "未占用"
-    else if (names = "")
-        it.names := "被占用（未知进程）"
+    if (lockedCount > 0)
+        it.names := names ? "被占用 · " names : "被占用（未知进程）"
+    else if (deniedCount > 0)
+        it.names := "无权限（需管理员）"           ; ACL 拒绝 ≠ 被占用，不误导去解占用
     else
-        it.names := "被占用 · " names
+        it.names := "未占用"
 }
 
 RefreshList() {
@@ -487,19 +503,26 @@ RefreshList() {
         it := gItems[A_Index]
         if !IsObject(it)
             continue
-        gList.Add("", it.path, it.isDir ? "文件夹" : "文件", it.names)
+        gList.Add("", it.path, it.kind, it.names)
     }
 }
 
 UpdateSummary() {
     global gItems, gInfo, gStatus
-    locked := 0
+    locked := 0, denied := 0
     Loop gItems.Length {
         it := gItems[A_Index]
-        if IsObject(it) && (it.names != "未占用" && it.names != "检测中…")
+        if !IsObject(it)
+            continue
+        if InStr(it.names, "被占用")
             locked++
+        else if InStr(it.names, "无权限")
+            denied++
     }
-    gInfo.Value := gItems.Length " 项 · " locked " 项被占用"
+    txt := gItems.Length " 项 · " locked " 项被占用"
+    if denied
+        txt .= " · " denied " 项无权限"
+    gInfo.Value := txt
 }
 
 ; 取当前选中的项索引数组（无选中则空）
@@ -624,10 +647,10 @@ DeleteSelected() {
     for i in sorted {
         it := gItems[i]
         res := [false, ""]
-        if !FileExist(it.path) {
-            res := [true, ""]
-        } else if it.isDir {
-            res := DeleteDirTree(it.path)
+        if (FileAttrs(it.path) = 0xFFFFFFFF) {
+            res := [true, ""]                    ; 已不存在，视为成功
+        } else if IsDirPath(it.path) {
+            res := DeleteDirTree(it.path)        ; 目录（含 junction 走内部 reparse 分支）
         } else {
             res := DeleteOneFile(it.path)
         }
