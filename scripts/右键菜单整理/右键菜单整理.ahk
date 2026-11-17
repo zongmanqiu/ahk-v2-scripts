@@ -2,7 +2,7 @@
 ; @name         右键菜单整理
 ; @id           context-menu-tidy
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.2.1
+; @version      1.2.2
 ; @description  拖入文件/文件夹读出它的右键菜单，或看桌面空白/文件夹空白的菜单，逐项隐藏或调整位置，只写 HKCU 可恢复
 ; @author       邱宗满
 ; @date         2026-11-17
@@ -408,8 +408,15 @@ RefreshItems() {
                                : scene.name
     gStatus.Value := scope " · verb " nVerb " 项 / COM " nCom " 项 · 已隐藏 " nHide " · 系统隐藏 " nSys
     ; Delete/Add 会把 WS_VSCROLL 样式位置回、原生条露出（K22/K36）：填完统一重算占位+摘条。
-    if (gScroll && !gScroll.dead)
+    if (gScroll && !gScroll.dead) {
         gScroll.Layout()
+        ; 填完后强制同步重画（RDW_INVALIDATE|RDW_ALLCHILDREN|RDW_UPDATENOW）：
+        ; 拖入路径 Delete/Add 之后 ListView 不重画、整块发白，滚一下滚轮才恢复（1.2.2 实测）；
+        ; UPDATENOW 直接同步走 WM_PAINT，不等消息泵。
+        DllCall("user32\RedrawWindow", "Ptr", gList.Hwnd, "Ptr", 0, "Ptr", 0, "UInt", 0x0181)
+        ; 同步重画 ListView 会盖掉自绘滑块（Z 序在 ListView 之下），补画一次。
+        gScroll.Paint()
+    }
 }
 
 SelectedItem() {
@@ -841,14 +848,16 @@ BuildGui() {
     gGui.Add("Text", "x" (NAV_X + 6) " y" (DROP_Y + 64) " w" (NAV_W - 12) " h20"
         " BackgroundFFFFFF c202B3A +0x200 Center", "拖到这里")
 
-    ; 列表区：白底块 + 四边线；装饰块 +0x100 让点击穿透（实测 K19）。
-    gGui.Add("Text", "x" (LIST_X + 1) " y" (LIST_Y + 1) " w" (LIST_W - 2)
-        " h" (HEAD_H + LIST_H - 1) " BackgroundFFFFFF +0x100")
-    gGui.Add("Text", "x" LIST_X " y" LIST_Y " w" LIST_W " h1 BackgroundB7C8E0 +0x100")
-    gGui.Add("Text", "x" LIST_X " y" (LIST_Y + HEAD_H + LIST_H) " w" LIST_W " h1 BackgroundB7C8E0 +0x100")
-    gGui.Add("Text", "x" LIST_X " y" LIST_Y " w1 h" (HEAD_H + LIST_H + 1) " BackgroundB7C8E0 +0x100")
-    gGui.Add("Text", "x" (LIST_X + LIST_W - 1) " y" LIST_Y " w1 h" (HEAD_H + LIST_H + 1) " BackgroundB7C8E0 +0x100")
-    gGui.Add("Text", "x" (LIST_X + 1) " y" (LIST_Y + 1) " w" (LIST_W - 2) " h" HEAD_H " BackgroundDCE8F7 +0x100")
+    ; 列表区：四边线 + 表头背景块。装饰块一律 -0x100（去 SS_NOTIFY 让命中穿透，K19）。
+    ; 注意：1.2.2 曾在这里铺一块 BackgroundFFFFFF 白底大块——AHK 的控件 Z 序与创建序
+    ; 相反，后建的 ListView 反而在它之下，实测这块白底把整个列表的鼠标点击全吃掉
+    ; （点行选不中）且拖入刷新后重绘盖白整块列表；它几何上被表头块+ListView 完全
+    ; 覆盖，直接删除（ListView 自带 BackgroundFFFFFF）。
+    gGui.Add("Text", "x" LIST_X " y" LIST_Y " w" LIST_W " h1 BackgroundB7C8E0 -0x100")
+    gGui.Add("Text", "x" LIST_X " y" (LIST_Y + HEAD_H + LIST_H) " w" LIST_W " h1 BackgroundB7C8E0 -0x100")
+    gGui.Add("Text", "x" LIST_X " y" LIST_Y " w1 h" (HEAD_H + LIST_H + 1) " BackgroundB7C8E0 -0x100")
+    gGui.Add("Text", "x" (LIST_X + LIST_W - 1) " y" LIST_Y " w1 h" (HEAD_H + LIST_H + 1) " BackgroundB7C8E0 -0x100")
+    gGui.Add("Text", "x" (LIST_X + 1) " y" (LIST_Y + 1) " w" (LIST_W - 2) " h" HEAD_H " BackgroundDCE8F7 -0x100")
     gGui.SetFont("s10 Bold", "Microsoft YaHei UI")
     hx := LIST_X + 7
     gGui.Add("Text", "x" hx " y" (LIST_Y + 1) " w" (COL_NAME_W - 6) " h" HEAD_H

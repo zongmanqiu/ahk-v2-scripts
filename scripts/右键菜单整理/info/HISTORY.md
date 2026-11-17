@@ -2,6 +2,16 @@
 
 只增不改：每次发版在最上面加一段 `## <版本>（日期）`。
 
+## 1.2.2（2026-11-18）
+
+用户实测两个交互 bug，一起根治：
+
+**点列表选不中**：列表区铺了一块 `BackgroundFFFFFF` 白底大块（1.1.0 引入，注释还写着"+0x100 让点击穿透"——方向写反了，`+0x100` 恰是 SS_NOTIFY、会**吃**点击）。实测 AHK 控件 Z 序与创建序相反，后建的 ListView 反在白底块之下，整个列表区的鼠标点击全被它吃掉（MCP send_input 实测 target=Static、selected_count=0；PostMessage 直达 ListView 则 selected=1，证明列表逻辑无辜）。先试 `-0x100` 去 SS_NOTIFY，但宿主 `RealChildWindowFromPoint` 不探测 HTTRANSPARENT 仍命中它；真实鼠标的穿透规则又依赖 Z 序兄弟关系，不可靠。**根治=直接删除白底大块**：它几何上被表头块+ListView 完全覆盖（ListView 自带白底），删除后点击命中 ListView 本身，实机两行选中皆 OK。列表四条边线与表头背景块同步 `-0x100`。
+
+**拖入后列表整块发白**（滚一下滚轮才恢复）：拖入路径 Delete/Add 之后 ListView 没有同步重画，要等 LVM_SCROLL 才画。修复：RefreshItems 末尾 `RedrawWindow(gList, RDW_INVALIDATE|RDW_ALLCHILDREN|RDW_UPDATENOW)` 强制同步走 WM_PAINT；同步重画会盖掉 Z 序在下的自绘滑块，紧接 `gScroll.Paint()` 补画。白底大块的绘制遮挡同时随删除根治。
+
+**验收**：selftest 16 项全绿；六层回归 ALL PASS；实机 MCP：点行 target=SysListView32、selected_count=1、滚轮后滑块在位、刷新后列表正常渲染。
+
 ## 1.2.1（2026-11-18）
 
 用户实测反馈三类问题，全部修掉：
