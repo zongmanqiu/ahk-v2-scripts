@@ -102,6 +102,26 @@
       "historyGithub": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/master/history/file-time-modifier.json"
     },
     {
+      "name": "文件解锁",
+      "id": "file-unlock",
+      "version": "1.0.0",
+      "date": "2026-11-17",
+      "description": "检测文件或文件夹被哪个进程占用，列出占用者，可手动结束进程解锁",
+      "author": "邱宗满",
+      "license": "AGPL-3.0",
+      "requires": "AutoHotkey v2.0",
+      "host": "AHKDeck 0.3.6+（亦可独立运行）",
+      "entry": "主窗口「检测占用」或拖入文件/文件夹；--selftest 为无 GUI 分支",
+      "path": "scripts/文件解锁/文件解锁.ahk",
+      "size_kb": 15.5,
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/file-unlock-1.0.0/file-unlock.ahk",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/file-unlock-1.0.0/file-unlock.ahk",
+      "package": "",
+      "packageGithub": "",
+      "history": "https://raw.giteeusercontent.com/qiuzongman/ahk-v2-scripts/raw/master/history/file-unlock.json",
+      "historyGithub": "https://raw.githubusercontent.com/zongmanqiu/ahk-v2-scripts/master/history/file-unlock.json"
+    },
+    {
       "name": "硬件信息",
       "id": "hardware-info",
       "version": "2.3.4",
