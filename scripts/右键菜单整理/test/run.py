@@ -4,16 +4,21 @@
 前置：把 <名>.ahk 复制进 .build/Scripts 平铺目录，再运行：
   python scripts/右键菜单整理/test/run.py
 
-只起本脚本自己的 MCP 临时实例，不动用户手开的主程序。分六层：
+只起本脚本自己的 MCP 临时实例，不动用户手开的主程序。分九层：
   1. --selftest 纯函数断言（三场景/来源展开/状态位置合并/隐藏标记/共享CLSID/COM显示名）
   2. --probe roots 实测三场景位置根：桌面=背景+个性化、文件夹空白=背景、拖入文件/文件夹各自展开
-  3. GUI 几何：客户区 820×450、3 入口、拖入区、四列列表（顺序/菜单项/来源/状态）、5 个等宽按钮、状态条
-  4. 场景切换：点桌面空白/文件夹空白，列表随 HKCR 真实来源变化（桌面多个性化项）
-  5. L1 隐藏/恢复 + 位置三档：影子键按根写、HKLM 原键不变（--probe verb 多根）
-  6. L2 COM 隐藏/恢复：Blocked 按 CLSID 增删、CLSID 显示名与 HKLM 原键不变
+  3. 二级内容与数据源一致：发送到 = SendTo 目录项数、新建 ≥ 6 项（1.6.3 加的）
+  4. GUI 几何：客户区 820×450、3 入口、拖入区、五列列表（顺序/菜单项/来源/可改/状态）、5 个等宽按钮、状态条
+  10. 1.8.0 新增项：--probe add 写 MUIVerb+command、列表来源=自定义、--probe delcustom 删净
+  5. 隐藏不可见项过滤：勾选只看真实菜单会出现的项，取消后多出系统隐藏/Extended 项
+  6. 场景切换：桌面空白/文件夹空白的来源与桌面专属项
+  7. 顺序列：主项连续编号、二级项留空带缩进
+  8. L1 隐藏/恢复 + 位置三档：影子键按根写、HKLM 原键不变（--probe verb 多根）
+  9. L2 COM 隐藏/恢复：Blocked 按 CLSID 增删、CLSID 显示名与 HKLM 原键不变
      结束清理所有本测试写下的 HKCU 键，恢复原状
 """
 from pathlib import Path
+import os
 import sys
 import time
 
@@ -25,7 +30,10 @@ from mcp_client import MCP  # noqa: E402
 NAME = "右键菜单整理"
 OUT = Path(__file__).resolve().parent / "selftest-result.txt"
 # 运行时产物写进脚本同名文件夹（.gitignore 已忽略 scripts/*/*/）
-ROOTS_OUT = Path(__file__).resolve().parents[1] / "右键菜单整理" / "roots-probe.txt"
+RUNTIME = Path(__file__).resolve().parents[1] / "右键菜单整理"
+ROOTS_OUT = RUNTIME / "roots-probe.txt"
+SUBS_OUT = RUNTIME / "submenus-probe.txt"
+DESK_SUBS_OUT = RUNTIME / "newmenu-probe.txt"
 
 TEST_ROOT = r"*"
 TEST_VERB = "pintohomefile"
@@ -123,10 +131,11 @@ def test_selftest(m, sid):
                "顺序列排序键定长补零", "按顺序列升序排组", "同列再点一次反向",
                "按菜单项列排序", "二级项缩进标记与图层", "SHGetFileInfo 类型名",
                "位置/状态排序档位（含「菜单外」）", "接管闸门：无 MUIVerb 的内建动词不复制",
-               "真菜单文字归一化", "真菜单白名单：友好名宽松匹配"):
+               "真菜单文字归一化", "真菜单白名单：友好名宽松匹配",
+               "ShellNew 有效值判据", "自定义项键名前缀独立", "加速键 (&X) 从显示名去掉"):
         assert kw in text, f"自测断言缺失: {kw}"
     n = len([l for l in text.splitlines() if l.startswith(("PASS ", "FAIL "))])
-    print(f"  [1/8] selftest {n} 项全绿（三场景/来源合并/共享CLSID/顺序接管/表头排序）")
+    print(f"  [1/9] selftest {n} 项全绿（三场景/来源合并/共享CLSID/顺序接管/表头排序）")
 
 
 def test_roots(m, sid):
@@ -147,7 +156,46 @@ def test_roots(m, sid):
         assert ROOTS_OUT.exists(), f"roots 探针未写文件: {key}"
         got = ROOTS_OUT.read_text(encoding="utf-8-sig").split(",")
         assert got == expect, f"{key} 展开错: 期望 {expect} 实际 {got}"
-    print("  [2/8] 三场景位置根实测正确（桌面多个性化、文件/文件夹各自展开）")
+    print("  [2/9] 三场景位置根实测正确（桌面多个性化、文件/文件夹各自展开）")
+
+
+def test_submenus(m, sid):
+    """二级内容和数据源严格对齐（1.6.3 用户报「发送到 二级菜单缺内容」的回归）。
+
+    真实菜单树对「发送到 / 新建 / 包含到库中」是不可靠的：发送到是延迟填充（要自己发
+    WM_INITMENUPOPUP 才长出来），新建每次只回一部分——实测同一天里「发送到」回过 1 条
+    空壳、「新建」漏过 RAR/文本文档/库/联系人/压缩。这三项必须以数据源为准，
+    行数要等于数据源，不能等于「这次树恰好读到几条」。"""
+    RUNTIME.mkdir(parents=True, exist_ok=True)
+    obj = RUNTIME / "probe-obj.txt"
+    obj.write_text("x", encoding="utf-8")
+
+    SUBS_OUT.unlink(missing_ok=True)
+    probe(m, sid, "items", "obj", str(SUBS_OUT), str(obj))
+    rows = [ln.split("|") for ln in SUBS_OUT.read_text(encoding="utf-8-sig").splitlines() if ln]
+    sendto = [r[1] for r in rows if len(r) > 2 and r[2] == "发送到"]
+    # 发送到 = SendTo 目录里除 desktop.ini 和 .lnk 快捷方式以外的每一项。
+    # 1.7.0 修正：1.6.3 把 .lnk 也列出来，本机 8 项，可真实菜单只有 4 项（用户报「内容太多」）。
+    # 实测 Win11 26200 的「发送到」只列注册了发送处理器的项，.lnk 一个都不进菜单，
+    # 所以期望值必须同步排除 .lnk，否则这条断言会把「列多了」当成正确。
+    sendto_dir = Path(os.environ["APPDATA"]) / "Microsoft" / "Windows" / "SendTo"
+    expect = [p for p in sendto_dir.iterdir()
+              if p.name.lower() != "desktop.ini" and p.suffix.lower() != ".lnk"]
+    assert len(sendto) == len(expect), (
+        f"发送到 子项应与 SendTo 目录（除去 .lnk）一致：列表 {len(sendto)} 条 / 目录 {len(expect)} 项\n{sendto}")
+    assert sendto, "发送到 不应为空"
+
+    DESK_SUBS_OUT.unlink(missing_ok=True)
+    probe(m, sid, "items", "deskbg", str(DESK_SUBS_OUT))
+    rows = [ln.split("|") for ln in DESK_SUBS_OUT.read_text(encoding="utf-8-sig").splitlines() if ln]
+    newmenu = [r[1] for r in rows if len(r) > 2 and r[2] == "新建"]
+    # 新建 至少要有 文件夹 + 快捷方式 + 文本文档 + 压缩(zipped)文件夹 + 库 + 联系人
+    assert len(newmenu) >= 6, f"新建 子项太少（{len(newmenu)}）: {newmenu}"
+    # 1.8.0：空 ShellNew 键（AMOS/RAR）是幻影项，shell 自己也不列，必须挡掉。
+    for phantom in ("AMOS", "RAR 文件"):
+        assert not any(phantom in n for n in newmenu), f"新建 不应有幻影项 {phantom}: {newmenu}"
+    assert newmenu[0].strip().endswith("文件夹"), f"新建 第一项应为「文件夹」: {newmenu[:3]}"
+    print(f"  [3/9] 二级内容与数据源一致：发送到 {len(sendto)} 项 / 新建 {len(newmenu)} 项")
 
 
 def test_geometry(m, sess):
@@ -156,43 +204,43 @@ def test_geometry(m, sess):
     c = w["client"]
     assert c["w"] == 820 and c["h"] == 450, f"客户区错: {c}"
     texts = [x.get("text", "") for x in w["controls"]]
-    for name in ("拖入文件/文件夹", "桌面空白处", "文件夹空白处", "把文件或文件夹", "拖到这里"):
+    for name in ("拖入文件(夹)", "桌面空白处", "文件夹空白处", "把文件(夹)", "拖到这里"):
         assert name in texts, f"缺入口/拖入区 {name}"
     assert "当前：" not in "".join(texts), "1.2.1 已删『当前: xxx』标签，不应存在"
     # 1.4.0：按钮只留四件事（状态切换 / 上移 / 下移 / 刷新）+ 一个「隐藏不可见项」勾选框；
     # 四个按钮同宽同距（BTN_W=72 / BTN_GAP=8），从 LIST_X 起排。
-    for name in ("隐藏", "上移", "下移", "刷新", "隐藏不可见项", "✓"):
+    for name in ("隐藏", "上移", "下移", "自定义", "刷新", "隐藏不可见项", "✓"):
         assert name in texts, f"缺按钮/勾选框 {name}"
-    for gone in ("显示", "置顶", "置底", "恢复位置"):
+    for gone in ("显示", "置顶", "置底", "恢复位置", "恢复"):
         assert gone not in texts, f"1.3.0 已删按钮「{gone}」不应存在"
     # 垂直节奏：状态条贴底（y+h=450），按钮底与状态条之间留 BLOCK_GAP=6。
     stat = [x for x in w["controls"] if x.get("client", {}).get("y") == 420
             and x.get("client", {}).get("h") == 30]
     assert stat, f"状态条应 y=420 h=30（贴底）: {[x['client'] for x in w['controls'] if x['client']['y'] >= 380]}"
-    # 动作按钮是「文字块(385) 叠 描边框(384)」双层，按文字块统计。
-    btns = [x for x in w["controls"] if x.get("client", {}).get("y") == 385
-            and x.get("client", {}).get("h") == 28]
-    assert len(btns) == 5, f"5 个动作按钮（隐藏/上移/下移/恢复/刷新）应在 y=385: {len(btns)}"
+    # 1.6.0 起按钮是「整块文字层 + 四条 1px 描边细条」，文字层就是按钮本体。
+    btns = [x for x in w["controls"] if x.get("client", {}).get("y") == 384
+            and x.get("client", {}).get("h") == 30 and x.get("client", {}).get("w") == 72]
+    assert len(btns) == 5, f"5 个动作按钮（隐藏/上移/下移/恢复/刷新）应在 y=384: {len(btns)}"
     btns.sort(key=lambda x: x["client"]["x"])
     xs = [x["client"]["x"] for x in btns]
     ws = {x["client"]["w"] for x in btns}
-    assert ws == {70}, f"四个按钮必须同宽（文字块 70）: {ws}"
-    assert xs == [173, 253, 333, 413, 493], f"按钮起点应等距 80（173..493）: {xs}"
+    assert ws == {72}, f"五个按钮必须同宽（72）: {ws}"
+    assert xs == [172, 252, 332, 412, 492], f"按钮起点应等距 80（172..492）: {xs}"
     check = [x for x in w["controls"] if x.get("text") == "隐藏不可见项"]
     assert check and check[0]["client"]["y"] == 384, "勾选框应在按钮行（y=384）"
-    # 1.5.0 四列表头：顺序 / 菜单项 / 来源 / 状态（「位置」列已删，顺序号已说明位次），
+    # 1.7.0 五列表头：顺序 / 菜单项 / 来源 / 可改 / 状态（「位置」列 1.5.0 已删），
     # 且默认「顺序」后面挂 ↑。
     heads = [(x["client"]["x"], x.get("text", "")) for x in w["controls"]
              if x.get("client", {}).get("y") == 17 and x.get("text")]
     titles = [t for _, t in heads]
-    assert len(heads) == 4, f"应有 4 个表头块: {heads}"
+    assert len(heads) == 5, f"应有 5 个表头块: {heads}"
     assert titles[0].startswith("顺序") and "↑" in titles[0], f"默认按顺序升序，表头应带 ↑: {titles[0]}"
-    for i, name in enumerate(("菜单项", "来源", "状态")):
+    for i, name in enumerate(("菜单项", "来源", "可改", "状态")):
         assert titles[i + 1] == name, f"表头 {i+2} 应为「{name}」（未排序列不带箭头）: {titles[i+1]}"
     assert "位置" not in titles, f"1.5.0 已删「位置」列: {titles}"
     lv = [x for x in w["controls"] if x.get("class") == "SysListView32"]
-    assert lv and lv[0]["items"]["columns"] == 4, f"列表应四列: {lv and lv[0]['items']['columns']}"
-    print("  [3/8] GUI 几何 820×450 + 3 入口 + 拖入区 + 四列 + 5 等宽按钮 + 表头默认顺序↑")
+    assert lv and lv[0]["items"]["columns"] == 5, f"列表应五列: {lv and lv[0]['items']['columns']}"
+    print("  [4/9] GUI 几何 820×450 + 3 入口 + 拖入区 + 五列 + 5 等宽按钮 + 表头默认顺序↑")
 
 
 def status_text(m, sess):
@@ -246,40 +294,55 @@ def click_nav(m, sess, y, expect_text, fewer_than=None):
     return rows
 
 
-def wait_status_has(m, sess, frag, timeout=8.0):
-    """状态条尾部的「仅列可见项 / 列出全部项」是最可靠的刷新完成信号。"""
+def wait_rows_change(m, sess, prev, timeout=8.0):
+    """1.8.0 状态栏不再带「仅列可见项」尾巴，改用行数变化当刷新完成信号。
+    刷新是先 Delete 清空再逐行 Add，中途读数会偏小，所以要求连续两次读数一致才算填完。"""
     t0 = time.time()
-    last = ""
+    stable = 0
+    rows = []
     while time.time() - t0 < timeout:
-        last = status_text(m, sess)
-        if frag in last:
-            return last
+        rows = rows_of(m, sess)
+        if rows and len(rows) != prev:
+            stable += 1
+            if stable >= 2:
+                return rows
+        else:
+            stable = 0
         time.sleep(0.2)
-    raise AssertionError(f"等不到状态包含「{frag}」，最后: {last}")
+    return rows
 
 
 def test_visible_filter(m, sess):
     """「隐藏不可见项」勾选框：勾上只列真实菜单里会出现的项，取消后全部列出。"""
     click_nav(m, sess, 62, "桌面空白处")
     rows_on = wait_rows(m, sess)
-    assert not any(r[3] == "系统隐藏" for r in rows_on), f"勾选态不应有系统隐藏项: {rows_on}"
+    assert not any(r[4] == "系统隐藏" for r in rows_on), f"勾选态不应有系统隐藏项: {rows_on}"
     # 取消勾选（点勾选框文字区 x=686..804 y=384..414）
     m.call("send_input", {"session": sess, "action": "click", "x": 750, "y": 399})
-    wait_status_has(m, sess, "列出全部项")
-    rows_off = wait_rows(m, sess)
+    rows_off = wait_rows_change(m, sess, len(rows_on))
     assert len(rows_off) > len(rows_on), f"取消勾选应列出更多项: {len(rows_on)} vs {len(rows_off)}"
     # 勾回默认态
     m.call("send_input", {"session": sess, "action": "click", "x": 750, "y": 399})
-    wait_status_has(m, sess, "仅列可见项")
-    print(f"  [4/8] 隐藏不可见项：勾选 {len(rows_on)} 项 → 取消 {len(rows_off)} 项（多出被系统隐藏/Extended 的项）")
+    rows_back = wait_rows_change(m, sess, len(rows_off))
+    assert len(rows_back) == len(rows_on), f"勾回应恢复原行数: {len(rows_back)} vs {len(rows_on)}"
+    print(f"  [5/9] 隐藏不可见项：勾选 {len(rows_on)} 项 → 取消 {len(rows_off)} 项（多出被系统隐藏/Extended 的项）")
 
 
 def test_scenes(m, sess):
     desk = click_nav(m, sess, 62, "桌面空白处")
-    folder = click_nav(m, sess, 94, "文件夹空白处", fewer_than=len(desk))
-    srcs = {r[2] for r in desk}   # 0顺序 1菜单项 2来源 3状态
+    folder = click_nav(m, sess, 94, "文件夹空白处")
+    srcs = {r[2] for r in desk}   # 0顺序 1菜单项 2来源 3可改 4状态
     assert "静态" in srcs and "COM" in srcs, f"来源列应含静态+COM: {srcs}"
-    print(f"  [5/8] 场景切换：桌面 {len(desk)} 项 > 文件夹空白 {len(folder)} 项（多个性化项），两来源齐")
+    # 桌面专有的是 DesktopBackground 根下的「个性化/显示设置」；文件夹空白没有。
+    # 1.6.3 起不再比总行数：新建/发送到的二级项数已经和真实菜单对齐，两边都长，
+    # 比总数会变成「30 vs 30」这种与事实无关的假失败。
+    names_desk = {r[1] for r in desk}
+    names_folder = {r[1] for r in folder}
+    desk_only = {"个性化", "显示设置"}
+    assert desk_only & names_desk, f"桌面空白应有个性化/显示设置: {sorted(names_desk)[:10]}"
+    assert not (desk_only & names_folder), f"文件夹空白不该有个性化/显示设置: {sorted(names_folder)[:10]}"
+    print(f"  [6/9] 场景切换：桌面 {len(desk)} 项 / 文件夹空白 {len(folder)} 项，"
+          "桌面多个性化+显示设置，两来源齐")
 
 
 def test_order_column(m, sess):
@@ -293,8 +356,8 @@ def test_order_column(m, sess):
     assert subs, f"桌面空白场景应有二级项（新建/发送到）: {rows[:8]}"
     for r in subs:
         assert r[1].startswith("    · "), f"二级项要有缩进圆点: {r}"
-        assert r[3] == "", f"二级项没有状态（顺序/来源列另算）: {r}"
-    print(f"  [6/8] 顺序列 1..{len(main)} 连续 + {len(subs)} 个二级项留空且带缩进圆点")
+        assert r[4] == "", f"二级项没有状态（顺序/来源/可改列另算）: {r}"
+    print(f"  [7/9] 顺序列 1..{len(main)} 连续 + {len(subs)} 个二级项留空且带缩进圆点")
 
 
 def test_hide_show(m, sid):
@@ -308,7 +371,7 @@ def test_hide_show(m, sid):
     probe(m, sid, "verb", TEST_ROOT, TEST_VERB, "show")
     assert winreg_val(SHADOW, "ProgrammaticAccessOnly") is None, "恢复后应删标记"
     assert winreg_val(SHADOW, "MUIVerb", winreg.HKEY_LOCAL_MACHINE) == lm_before, "HKLM 原键被改动！"
-    print("  [7a/8] L1 隐藏/恢复 → HKCU 影子键增删、HKLM 原键不变")
+    print("  [8a/9] L1 隐藏/恢复 → HKCU 影子键增删、HKLM 原键不变")
 
 
 def test_position(m, sid):
@@ -322,7 +385,7 @@ def test_position(m, sid):
     assert winreg_val(SHADOW, "Position") is None, "恢复后应无 Position"
     assert winreg_val(SHADOW, "MUIVerb", winreg.HKEY_LOCAL_MACHINE) == lm_before, "HKLM 原键被改动！"
     clean_shadow()
-    print("  [7b/8] L1 位置三档 → HKCU Position 正确、HKLM 不变、清理干净")
+    print("  [8b/9] L1 位置三档 → HKCU Position 正确、HKLM 不变、清理干净")
 
 
 def test_com_block(m, sid):
@@ -339,12 +402,100 @@ def test_com_block(m, sid):
         assert winreg_val(BLOCKED, TEST_CLSID) is None, "恢复后 Blocked 应删"
         assert winreg_val(CLSID_HKCR, "", winreg.HKEY_CLASSES_ROOT) == clsid_before, "HKCR CLSID 被改动！"
         assert winreg_val(CLSID_HKLM, "", winreg.HKEY_LOCAL_MACHINE) == hklm_before, "HKLM CLSID 被改动！"
-        print("  [8/8] L2 隐藏/恢复 → HKCU Blocked 按 CLSID 增删、CLSID/HKLM 原键不变")
+        print("  [9/9] L2 隐藏/恢复 → HKCU Blocked 按 CLSID 增删、CLSID/HKLM 原键不变")
     finally:
         if blocked_before is not None:
             set_val(BLOCKED, TEST_CLSID, blocked_before)
         else:
             del_val(BLOCKED, TEST_CLSID)
+
+
+def nuke_key(root, path):
+    """递归删键（DeleteKey 删不掉带 command 子键的项）。"""
+    import winreg
+    access = winreg.KEY_READ | winreg.KEY_WRITE | winreg.KEY_WOW64_64KEY
+    try:
+        k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, path, 0, access)
+    except OSError:
+        return
+    while True:
+        try:
+            sub = winreg.EnumKey(k, 0)
+        except OSError:
+            break
+        nuke_key(root, path + "\\" + sub)
+    winreg.CloseKey(k)
+    try:
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, path)
+    except OSError:
+        pass
+
+
+def cleanup_custom_roots():
+    """清掉两个场景根下所有 ahkdeckadd_*，无论测试在哪一步挂掉。"""
+    import winreg
+    access = winreg.KEY_READ | winreg.KEY_WOW64_64KEY
+    for root in ("Directory\\Background", "DesktopBackground"):
+        base = f"Software\\Classes\\{root}\\shell"
+        try:
+            k = winreg.OpenKey(winreg.HKEY_CURRENT_USER, base, 0, access)
+        except OSError:
+            continue
+        names = []
+        i = 0
+        while True:
+            try:
+                names.append(winreg.EnumKey(k, i))
+            except OSError:
+                break
+            i += 1
+        winreg.CloseKey(k)
+        for n in names:
+            if n.startswith("ahkdeckadd_"):
+                nuke_key(winreg.HKEY_CURRENT_USER, base + "\\" + n)
+
+
+def test_add_custom(m, sid):
+    """1.8.0 新增菜单项：--probe add 写 HKCU MUIVerb+command，列表来源=自定义，删除删净。"""
+    import winreg
+    add_out = RUNTIME / "addprobe.txt"
+    items_out = RUNTIME / "additems.txt"
+    del_out = RUNTIME / "delprobe.txt"
+    name = "探针测试命令"
+    cleanup_custom_roots()   # 先清掉上次崩溃可能留下的同前缀键，避免加出 _2
+    try:
+        add_out.unlink(missing_ok=True)
+        probe(m, sid, "add", "deskbg", name, "notepad.exe", str(add_out))
+        assert add_out.exists(), "新增探针未写结果"
+        key = add_out.read_text(encoding="utf-8-sig").strip().split("=", 1)[1]
+        assert key.startswith("ahkdeckadd_"), f"键名前缀错: {key}"
+        # 两个位置根都写了 MUIVerb + command
+        for root in ("Directory\\Background", "DesktopBackground"):
+            base = f"Software\\Classes\\{root}\\shell\\{key}"
+            assert winreg_val(base, "MUIVerb") == name, f"{root} MUIVerb 未写"
+            assert winreg_val(base + "\\command", "") == "notepad.exe", f"{root} command 未写"
+            assert winreg_val(base, "ProgrammaticAccessOnly") is None, "新增项不该带隐藏标记"
+        # 列表里可见且来源=自定义
+        items_out.unlink(missing_ok=True)
+        probe(m, sid, "items", "deskbg", str(items_out))
+        rows = [ln.split("|") for ln in items_out.read_text(encoding="utf-8-sig").splitlines() if ln]
+        hit = [r for r in rows if len(r) > 2 and r[1] == name]
+        assert len(hit) == 1 and hit[0][2] == "自定义", f"新增项应合并成一行且来源=自定义: {hit}"
+        print("  [10/10] 新增项：两位置根写 MUIVerb+command、列表来源=自定义")
+        # 删除
+        del_out.unlink(missing_ok=True)
+        probe(m, sid, "delcustom", "deskbg", key, str(del_out))
+        assert del_out.read_text(encoding="utf-8-sig").strip() == "deleted=2", "应删两处来源"
+        for root in ("Directory\\Background", "DesktopBackground"):
+            nuke_key(winreg.HKEY_CURRENT_USER,
+                     f"Software\\Classes\\{root}\\shell\\{key}")
+        items_out.unlink(missing_ok=True)
+        probe(m, sid, "items", "deskbg", str(items_out))
+        assert name not in items_out.read_text(encoding="utf-8-sig"), "删除后列表仍出现"
+    finally:
+        for p in (add_out, items_out, del_out):
+            p.unlink(missing_ok=True)
+        cleanup_custom_roots()
 
 
 def main():
@@ -355,6 +506,7 @@ def main():
         assert sid, "脚本未出现在 list_scripts：先复制到 .build/Scripts"
         test_selftest(m, sid)
         test_roots(m, sid)
+        test_submenus(m, sid)
         clean_shadow()
         run = m.call("run_script", {"script": sid, "timeout_ms": 3000})
         assert run.get("ok") and not run.get("errors"), f"启动失败: {run}"
@@ -367,6 +519,7 @@ def main():
         test_hide_show(m, sid)
         test_position(m, sid)
         test_com_block(m, sid)
+        test_add_custom(m, sid)
         out = m.call("get_session_output", {"session": sess})
         assert out.get("ok") and not out.get("fatal"), f"运行期致命错误: {out}"
         print("ALL PASS")

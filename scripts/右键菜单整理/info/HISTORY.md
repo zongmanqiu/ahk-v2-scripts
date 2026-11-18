@@ -2,6 +2,295 @@
 
 只增不改：每次发版在最上面加一段 `## <版本>（日期）`。
 
+## 1.8.0（2026-11-18）
+
+用户提了四件事：菜单内容「常缺东西 / 有错误 / 名字不对」；脚本托盘齿轮弹出的选项
+「都没用、根本不需要」；管理菜单「应该也能新增项」；底部「恢复」按钮「毫无作用」。
+
+**1）托盘齿轮不再弹 AHK 默认项**
+
+宿主 `DeckEngine::TrayMenu()` 是把脚本自己的 `A_TrayMenu` 快照挂到齿轮上
+（`patches/.../script2.cpp` 的 `DeckDumpTrayMenu` 序列化 `g_script.mTrayMenu`，
+与 `#NoTrayIcon` 无关）。本脚本只有 `#NoTrayIcon`、从没清过菜单，于是 Open/Reload/
+Edit/Exit/Suspend/Pause/Help 全被抓去显示。加 `A_TrayMenu.Delete()` 后 items 为空——
+宿主源码明确把空数组当合法状态（DeckEngine.cpp:1585）：齿轮变灰、点击只前置窗口。
+**只动脚本，没碰宿主**。注意齿轮图标本身是宿主按 Running 状态画的，脚本删不掉图标，
+只能让它不再弹菜单。
+
+**2）「恢复」按钮删掉**
+
+`RestoreOrder()` 只撤销 p000N# 顺序副本，没调过序时点了只回一句「没有被接管的顺序」，
+界面毫无动静，用户判断「毫无作用」。按用户裁决把第四个按钮换成「新增」——
+按钮数、x 坐标、宽度全部不变。`RestoreOrder()` 函数保留供 `--probe restore` 回归用。
+
+**3）新增菜单项（简单静态 verb，蓝本 ContextMenuManager `NewShellDialog.cs`）**
+
+- 底部第四个按钮「新增」弹 420×300 的 Gui：菜单项名称 + 命令行两个输入框，
+  确定后写 `HKCU\Software\Classes\<当前场景位置根>\shell\ahkdeckadd_N`，
+  值为 `MUIVerb=名称` + `command\(默认)=命令行`；零提权、不碰 HKLM、不改命令。
+- 键名前缀 `ahkdeckadd_` 既保证唯一（N 自增到不冲突）又标记「这是本脚本加的」；
+  `MakeItems` 把这类项的来源列显示成「自定义」，和普通静态项一样可隐藏/可调序。
+- 对话框下半部列出本场景已有的自定义项，点 `× 名称` 调 `DeleteCustomVerb()`
+  删整棵键即完全撤销。作用范围复用 `SceneRoots()`，和隐藏走同一批根。
+- `%1` = 选中文件、`%V` = 所在目录，在输入框下方写明。
+
+**4）内容核对：抓到并修掉三类真 bug**
+
+1. **显示名裸加速键**：`VerbLabel()` 解析 `@shell32.dll` 间接串后没去 `(&V)`，
+   列表出现 `使用 Visual Studio 打开(&V)`、`在此处打开 Powershell 窗口(&S)`。
+   三条返回路径统一 `StripAccel()`，`ComLabel()` 同步处理。
+2. **「新建」幻影项**：旧版只判 `ShellNew` 子键存在就算一项；调研报告 §2.5 的权威判据是
+   至少要有一个 `NullFile/Data/FileName/Directory/Command/Handler`。实测 `.rar\ShellNew`
+   和 AMOS×6 的 ShellNew 键是空的 → 凭空多出 8 个幻影项；Office 四项挂在
+   `.docx\Word.Document.12\ShellNew`（含 FileName）反而没被认到正确路径。
+   加 `ShellNewHasValue()` 纯函数（selftest 覆盖）后，幻影全消失、Word/Excel/PPT/
+   Access 由数据源正确列出。空 ShellNew 键仍在注册表里，但 shell 自己也不列它。
+3. **GUID 裸名**：`{474C98EE-…}`（脱机文件）这类 CLSID 缺友好名映射，列里直接显示 GUID。
+   FriendlyClsids() 补两条本机实测项。
+- 另核对：拖入文件场景 19 个可见项与 `IContextMenu` 真实菜单**逐行一致**，桌面/文件夹
+  空白场景的主项也齐——用户说的「缺东西」主要是上面的幻影/裸名造成的观感。
+
+**5）同日 UI 打磨（用户反馈）**
+
+- 导航「拖入文件/文件夹」→「拖入文件(夹)」；**选中底色不跟随修复**：`Opt("Background…")`
+  改色不触发重绘，Opt 后补 `Redraw()`（拖放路径同改）。
+- 拖入区两行提示改「把文件(夹) / 拖到这里」。
+- 状态栏精简为「场景 · N 项」：verb/COM 细分、已隐藏/系统隐藏计数、「仅列可见项/列出全部项」
+  尾巴、拖入路径全部删掉；测试的刷新完成信号从状态尾巴改成行数变化（`wait_rows_change`）。
+- 「新增」按钮改名「自定义」（不止增、也能删，都是用户自己定义的）；对话框标题改
+  「自定义菜单项」；`PaintCaption()` 参数化，对话框与主窗共用同一套标题栏色；补「浏览…」
+  （选 exe 自动填名称 + `"%1"`/`"%V"`，仿 ContextMenuManager 的 NewShellDialog）与
+  PowerShell / CMD 两个模板按钮；底部按钮靠左（x16 起）。
+
+**6）二轮细节（用户反馈）**
+
+- **滚动滑块改标准配方**：旧版滑块 t-2=8px 粗条只留 1px 边，和「打开方式清理」长得
+  不一样（那是整段复制文件时间修改的标准 FlatScroll）。改成标准口径：滑块厚
+  `Max(3, t-6)`=4px、两侧各露 3px 轨道；`CursorInThumb` 上下各放宽 3px 把露出的轨道
+  算进拖动命中，手感与标准版「gap 块也算滑块」一致。
+- **拖入对象显示类型**：状态栏 scope 由固定「拖入对象」改为 `ObjScopeLabel()`——
+  文件夹→「文件夹」、带扩展名→「zip 文件 / md 文件」、无扩展名→「文件」；
+  明示改的是一整类文件的菜单，不是拖进来的那一个。selftest 加对应断言。
+
+**7）三轮细节（用户反馈）**
+
+- **滚动闪原生条根治**：旧 `ScrollToRow` 走 `LVM_SCROLL`——标准版注释明确实测
+  「LVM_SCROLL 每次滚动都会把原生滚动条置回（样式位立刻 H1V1）」，原生灰条在两帧之间
+  一闪。换成标准版做法：滚动作全走 `LVM_ENSUREVISIBLE`（0x1013，向下滚用「让目标视区
+  最后一行可见」口径），滚动完**当场** `HideNative`，再用「不擦背景的整块作废
+  （`InvalidateRect(..., false)` + `UpdateWindow`）」补交界半截字。
+- **背景场景补齐漏项**：用户报桌面空白/文件夹空白漏了很多。真对比后发现漏的是
+  「查看 / 排序方式 / 刷新 / 粘贴 / 粘贴快捷方式」——它们由 explorer 的 shell view
+  （DefView）注入背景菜单，注册表无可写键、IShellFolder 的 `IContextMenu` 在
+  0x0/0x4/0x14/0x24/0x2C 各 flags 下都拿不到（探针实测），COM 层永远列不出。
+  按 1.6.1 补「在新窗口中打开」的同类纪律补位：位次固定（经典菜单最前）、
+  标「内建/只读」，新增 `SureViewBuiltins()`；拖入对象场景不补。
+  另修：GUI 的「文件夹空白处」没有具体目录，`RealMenuTreeFor` 直接返回 0 → 一直没有
+  真实树；现在用 `%TEMP%` 当代理目录读树（背景菜单结构对任何文件夹一致），
+  ComposeFromTree 从此对 dirbg 也生效（位次、「在终端中打开」等树内项正确归位）。
+
+**验收**：`--validate` rc=0；`--selftest` 36 项全绿（后追加：滚动改 LVM_ENSUREVISIBLE 对齐标准版根治闪条；
+背景场景内建项按用户截图实锤顺序补位——桌面顶部查看/排序方式/刷新/粘贴/撤销 删除、
+底部显示设置/个性化，文件夹顶部加分组依据/自定义文件夹...、底部属性；
+ComposeFromTree 树行本就产出内建行，SureViewBuiltins 补位前按显示名去重防两份；
+selftest 38 项）；`ui_static 10/10`；九层 MCP 回归
+ALL PASS；实机探针确认 `(&V)/(&S)` 消失、AMOS/RAR 幻影消失、新增项来源=自定义、
+删除后列表不再出现。工作区 1.8.0，**未 commit、未 push**。
+
+## 1.7.0（2026-11-18）
+
+用户反馈：**「发送到」的内容太多了**（列表 8 项，真实菜单只 4 项），并问
+**「哪些能隐藏、能移动，哪些不行」**，提议加一列说明。
+
+**1）「发送到」不再列 `.lnk`**
+
+1. 1.6.3 为了修「二级菜单缺内容」把 SendTo 目录整个列了出来，本机 8 项，可真实菜单只有
+   文档 / 压缩(zipped)文件夹 / 邮件收件人 / 桌面快捷方式 4 项，差的 4 个全是 `.lnk`
+   （ALTRun.lnk、Fax Recipient.lnk、传真收件人.lnk、蓝牙文件传送.LNK）。
+2. 外壳的「发送到」只列注册了发送处理器的项（`.ZFSendToTarget` / `.DeskLink` /
+   `.MAPIMail` / `.mydocs`…），`.lnk` 一个都不进菜单。现在过滤掉 `.lnk`，结果与真实菜单
+   逐行一致，顺序也一致（文档 → 压缩 → 邮件 → 桌面）。
+3. 排序改成 `StrCompare(..., "Locale")`：中文按拼音，原来用 `Logical`（自然序）会排成
+   压缩 → 桌面 → 邮件 → 文档，和真实菜单对不上。
+4. **走不通的路，别再试**（都实测过）：给子菜单发 `WM_INITMENUPOPUP`、走
+   `IContextMenu2/3::HandleMenuMsg(2)`（hr=0 但子菜单永远是 1 个空项）；
+   `CoCreateInstance(CLSID_SendTo)` + `IShellExtInit::Initialize` 后 `QueryContextMenu`
+   （同样空壳）；逐项 `DragEnter` 判能否接收拖放（8 项全部 `DROPEFFECT_NONE`，分辨不出）；
+   `GetUIObjectOf(IDropTarget)` 是否存在（换个调用路径结论就翻，不可靠）。
+   顺带确认：`CLSID_New`（新建）走 `IShellExtInit` + `HandleMenuMsg` 是**能**填出来的
+   （15 项），只有 SendTo / 库这两类填不出。
+
+**2）新增「可改」列**
+
+5. 第五列，三档取值，判据与按钮的真实守卫逐条对齐（新增 `CapText()`）：
+   `隐藏·调序` / `仅隐藏` / `只读`。列宽 46+262+84+88+140 = 620 不变，仍是自绘滚动条内宽。
+6. `打开`/`编辑` 动词、内建项、二级项、系统共享 CLSID 一律 `只读`：点了也改不动，
+   先告诉用户，比点完弹一句「改不了」好。
+
+## 1.6.3（2026-11-18）
+
+用户实测反馈两条：**「隐藏」按钮没有边框线**、**「发送到」二级菜单缺少内容**。
+
+**发送到 / 新建 / 包含到库中 一律以数据源为准**
+
+1. 根因：真实菜单树对这三项不可靠——「发送到」是延迟填充的（要自己发
+   `WM_INITMENUPOPUP` 才长出来），同一次刷新里只回一条没文字的空壳；「新建」也只回 14 条
+   （漏掉 RAR/文本文档/库/联系人/压缩）。旧代码「树里有字就用树、没字才退回数据源」，
+   于是列表里「发送到」底下只剩一条「文档」。
+2. 现在这三项只要有数据源（SendTo 目录 / ShellNew 键 / 库目录）就整段用数据源，
+   真实树只在该 COM 项没有数据源时（7-Zip / 授予访问权限 / 上传至ima 这类 DLL 当场生成的）
+   才用。**不按显示名去重**：SendTo 里真有两个都叫「传真收件人」的项，shell 也列两条。
+3. 「发送到」的显示名改走 `IShellItem::GetDisplayName(SIGDN_NORMALDISPLAY)`：SendTo 里
+   `.ZFSendToTarget` / `.DeskLink` / `.MAPIMail` / `.mydocs` 的文件名是英文
+   （Compressed (zipped) Folder…），菜单显示的是本地化名（压缩(zipped)文件夹 / 桌面快捷方式 /
+   邮件收件人 / 蓝牙设备）。读不到才退回按文件名截扩展名。
+4. 「包含到库中」「发送到」按显示名排序：库那一项的真实菜单序实测是
+   Git → 保存的图片 → 本机照片 → 视频 → 图片 → 文档 → 音乐，目录枚举序（NTFS 顺序）对不上。
+5. 「新建」的 ShellNew 补上 ProgID 那一层：Office 挂在 `.docx\Word.Document.12\ShellNew`，
+   只查 `.ext\ShellNew` 会把 Word/Excel/PowerPoint/Publisher 全漏掉。只认扩展名的**默认
+   ProgID**——把每个子键都翻一遍会翻出 AMOS 那类「登记过但 shell 不显示」的 5 项。
+
+**按钮边框**
+
+6. `FlatButton` 从「内块 + 四条 1px 细条」改成 §10 的两块配方（外框块先建、内块后建）。
+   1.6.0 的「按钮变空白」是**建反了顺序**（后建的外框块把整块文字盖成边色），不是配方本身
+   的问题；细条是独立窗口，重绘/缩放下最容易漏一条边，边框交给整块外框更稳。
+   实测：5 个按钮在「刚打开 / 点过刷新 / 选中一行」三种状态下，四条边逐像素全是 `B7C8E0`
+   （异常像素 0），文字像素 92~143 个，没有被盖。
+
+**测试**
+
+7. 新增第 3 层「二级内容与数据源一致」：`发送到` 的行数必须等于 SendTo 目录里的项数
+   （除 desktop.ini），`新建` 至少 6 项且第一项是「文件夹」。这条直接盯住本次的 bug。
+8. 第 6 层「场景切换」不再比总行数（二级项补齐后两边都是 30 行，比总数变成假失败），
+   改成断言桌面有「个性化/显示设置」而文件夹空白没有。
+
+## 1.6.2（2026-11-18）
+
+多份外部代码审查的结论汇总。没有新增功能，全是「别把用户菜单改坏 / 别拖着系统资源不放 /
+别卡」。逐条只写真的成立、真的改了的。
+
+**接管与恢复的原子性（最要紧的一档）**
+
+1. `RebuildRoot` 原来第 3 步复制失败时只删本次已建的副本就返回，**上一轮写在原件上的
+   `ProgrammaticAccessOnly` / `_AhkDeckTakenOver` 留在那儿**——原件被隐藏、副本不存在，
+   这一项从右键菜单直接消失，而且副本没了「恢复」按钮扫不到它，用户无法自救。
+   现在回滚走 `RollbackRoot()`：按 `TAKE_MARK` 扫原件，该清的标记一并清掉。
+2. 第 5 步（给原件写让位标记）原来两条 `RegWrite` 共用一个 `try`，任一失败也照样
+   `return true`，结果是副本和原件**各出一项**。现在统计失败数，非 0 就整根回滚。
+3. `RestoreOrder` 原来只遍历「有副本」的 verb，孤儿标记清不掉；现在扫所有带 `TAKE_MARK`
+   的原件，且**先把副本上的隐藏意图搬回原件**再删副本——用户自己隐藏的项不会因为
+   「恢复顺序」而重新冒出来。
+
+**状态不再被覆盖**
+
+4. `ComposeFromTree` 收尾把「没在真菜单里出现」的项一律标 `absent`，把用户刚隐藏的项也
+   覆盖成「菜单外」，状态条的「已隐藏 N」永远归零。现在只改 `state = "show"` 的。
+5. `seenCom[guid]` 在按显示名合并那条分支里指向了「下一个还没建的行」，该 CLSID 在别的
+   来源根再出现时会把 roots 挂到无关项上。现在合并时同时把 `seenCom[guid]` 指向合并后的行。
+6. 二级项改成带 `parent` 引用、按本行父项判可见（`SubVisible`）；旧的 `ParentVisible`
+   只看「第一个带子项的 COM 项」，会把「新建」的子项跟着「发送到」一起过滤掉。
+
+**资源与性能**
+
+7. `SHGetDesktopFolder` / `ParseDisplayName` 的 PIDL / `SHBindToParent` / `GetUIObjectOf` /
+   `QueryInterface(IContextMenu2)` 全程 `ObjRelease` + `CoTaskMemFree`（`finally` 里做，
+   失败路径也覆盖）。以前每次刷新泄漏一整套接口，常驻扩展 DLL 一路涨到不卸载。
+8. `NewMenuChildren()` 原来每次刷新都枚举整个 HKCR（上万个子键 + 每个扩展名一次
+   `SHGetFileInfoW`），「新建」有几十个子项时同一次刷新要重复几十遍。现在按进程缓存
+   名字列表，行对象每次重建（行对象带 `ord`/`state`，跨刷新复用会被改脏）。
+9. `FriendlyClsids()` / `SharedClsids()` / `BuiltinVerbNames()` 三张表改 `static` 缓存。
+10. `RefreshItems` 加 `gBusy` 重入守卫：`QueryContextMenu` 会泵消息，这期间点按钮会重入，
+    把 `gItems` / `gRowMap` 打断成半成品。真正干活的部分改名 `RefreshItemsCore`。
+
+**跨机器与容错**
+
+11. CLSID 统一 `StrLower` 后查表——AHK 的 Map 字符串键**区分大小写**，第三方软件写的大小写
+    一不同，共享 CLSID 拒写保护、友好名、去重会同时失效。
+12. `MENUITEMINFOW` 的 x86 布局全错（`sizeof` 44→48、`hSubMenu` 16→20），32 位宿主下
+    id/子菜单/分隔线全读错，真菜单树等于失效。x64 本来是对的。
+13. `CommandFlags` 不是数值时 `Mod()` 会抛异常（被 GUI 层吞进 error.log，表现成列表空白），
+    加 `IsNumber` 判断。
+14. `error.log` 写不进脚本目录（Program Files / 只读盘）时退回 `%TEMP%`，不再整块静默吞掉。
+15. 按钮四条 1px 描边压在文字层上方却不接 `Click`，点到边框那一像素是死区；现在也挂回调。
+16. `MenuHostHwnd` 的隐藏宿主窗必须保住 `Gui` 对象引用（局部变量出函数即回收，窗口随之销毁，
+    正好卡在递归读菜单的过程中 → 延迟填充静默失败）。
+
+**查证后不改的**
+
+- **`CMF_EXPLORE` 带不出 `opennew*` 一族**。审查建议加 `0x4` 代替 `SureBuiltin` 硬编码补位；
+  实测 `--probe tree` 用 `0x10` 与 `0x14` 输出**逐行完全相同**，「在新窗口中打开」仍然不出现。
+  它是资源管理器绕过 `IShellFolder` 自己加的，`QueryContextMenu` 层面就是拿不到，补位保留。
+- **`MenuHostHwnd` 的 GC 在可见窗口上本来不会发生**（AHK 文档：窗口可见期间对象被保活），
+  但「正在递归读菜单」这个窗口期太要命，留个 `global` 引用零成本。
+- 副本前缀 `p0001#` 换成 `_ahkdeck_p0001#` 会更安全（避免误删第三方同形键），但那是**注册表
+  格式变更**，老用户的副本会变成孤儿，这版不动。
+
+## 1.6.1（2026-11-18）
+
+拿 1.6.0 复验，用户指出：把文件夹当对象拖进来时，真实菜单里有「在新窗口中打开」和
+「重命名」，列表里却没有。两处原因完全不同。
+
+**1）漏传 `CMF_CANRENAME`。** `QueryContextMenu` 的 uFlags 一直传 0，shell 就不往菜单里
+放「重命名」，连带「重命名」的位置也跟着缺。改成 `CMF_CANRENAME(0x10)` 后，重命名、属性
+这些标准项按真实位次出现，自动归到「内建」（只读）——它们没有注册表键，本来也改不了。
+实测 0x10 只多出这一族，不会带出 `explore` / `cmd` 之类不该显示的项。
+
+**2）「在新窗口中打开」shell 根本不渲染。** 这个 verb 注册在 `Folder\shell\opennewwindow`，
+但 `CDefaultContextMenu` 会把它从 IShellFolder 的公开菜单里滤掉、由资源管理器自己补上，
+所以调什么 flags 都读不到。新增 `--probe exmenu`：让资源管理器亲自弹一次菜单
+（`ControlFocus` 到 `DirectUIHWND` 后发 `{AppsKey}`，**不先聚焦菜单根本弹不出来**），
+再用 `MN_GETHMENU(0x01E1)` 把 HMENU 要回来读。实测它紧跟在「打开」之后、在
+「固定到快速访问」之前，于是用 `SureBuiltin()` 按这个位次补进列表；找不到「打开」做锚点
+就不补——位置放错比少一行更糟。
+
+同一份实测还确认：本机菜单里**没有**「在新标签页中打开」「在新进程中打开」，这两个注册表项
+存在但这次没渲染，按「菜单外」处理。
+
+**顺带**：`--probe exmenu` 只给人工核对真菜单用，正常流程不碰 GUI。
+
+## 1.6.0（2026-11-18）
+
+用户对照真实菜单复验 1.5.0，指出四处：7-Zip 的右侧子菜单没列出、授予访问权限没列出、
+上传至ima知识库位置不对、换一个文件顺序又错。四条病根是同一个：**1.5.0 只用真实菜单判
+「在不在」，顺序和二级内容仍然靠猜**。这一版把整棵菜单树读下来当准绳。
+
+**1）顺序不再按桶猜，直接用 shell 渲染出的位次。**
+`IContextMenu::QueryContextMenu` 之后，每一项的 verb 可以由
+`GetCommandString(idCmd, GCS_VERBW)` 拿到（本机实测 `open` / `pintohome` / `TakeOwnerShip` /
+`ZCode.OpenInZCode` / `SevenZip` 全部命中）。于是「注册表项 ↔ 菜单项」有了确定的一一对应，
+`ComposeFromTree()` 直接按菜单里的先后出列表，注册表项只负责「能不能隐藏/调序」。
+`NewMenuChildren` 那套桶（置顶 / 内建 / 静态 / COM）在拿到真菜单时整段跳过，只在
+拿不到真菜单（没拖入对象）时兜底。
+
+**2）二级菜单全部来自真实树，不再写死三个 CLSID。**
+- 7-Zip（7 项，含 `CRC SHA` 再下一层 14 项）、包含到库中（7 项）在 `QueryContextMenu`
+  时就已经建好，递归读即可；
+- 授予访问权限、发送到是**延迟填充**的：自己发一条 `WM_INITMENUPOPUP` 并转给
+  `IContextMenu2::HandleMenuMsg` 才补得出来。本机实测「授予访问权限」从 1 个空文字项
+  变成「删除访问 / 特定用户...」两项；
+- 只有真实树里这一级是空壳（发送到只剩 1 个空项）时，才回退到 SendTo 文件夹枚举。
+
+**3）桌面空白 / 文件夹空白也能拿真菜单了。**
+桌面用 `SHGetDesktopFolder` 的 `IShellFolder::CreateViewObject(IID_IContextMenu)`；
+文件夹空白用 `BindToObject` 拿到该文件夹的 `IShellFolder` 再 `CreateViewObject`。
+三场景都走同一套树，不再是「只有拖入对象才准」。
+
+**4）Windows 自带的剪切/复制/删除/属性单独成层。**
+它们由 shell 直接渲染，注册表里没有对应键，标 `layer="menu"`（来源列写「内建」），
+点隐藏/上移会明确提示「注册表里没有对应项」，而不是抛异常或悄悄不动。
+
+**踩坑记录：**
+- 读真菜单必须有一个窗口接 `WM_INITMENUPOPUP`；另建隐藏窗会被 `inspect_ui` 当成新窗口，
+  主窗状态条就读成空。现在优先借用主窗口 HWND，只在 `--probe`（无 GUI）时才建临时窗。
+- 真实菜单文字里存在 `&UWTSettings` 这种把 `&` 写在字母前的写法，只去尾部 `(&X)` 会漏，
+  显示出来带一个裸 `&`。`StripAccel` 现在尾部和内嵌的 `&` 一起去。
+
+**仍然做不到的：**
+- `在终端中打开`（Windows Terminal 的 MSIX 注册）、`NVIDIA App`（CLSID 无友好名可对）
+  这两类能显示但落不到注册表项，归「内建」只读，不能隐藏/调序。
+- 内建动词（打开 / cmd / Powershell）依旧不能调序，理由见 1.5.0 的接管闸门。
+
 ## 1.5.0（2026-11-18）
 
 用户按 1.4.0 的实机体验提了 4 点。这一版的关键词是「别再骗人」：看不见的反馈、列了不存在的项、
