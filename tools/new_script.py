@@ -42,12 +42,33 @@ AHK = r"""; ==UserScript==
 ;
 ; @@NAME@@：@@DESC@@
 ; 骨架由 tools/new_script.py 生成（m213）：§10 八色令牌、字号、1px 描边按钮、自绘状态条。
+; 诊断输出照 §4.2：`#Warn All, StdOut` 永不弹窗，OnError 把异常写进脚本目录的 error.log。
 ; 业务逻辑替换 OnAction() 的 TODO；颜色必须内联字面量（§10.2.1），不许自造色值。
 ; 本脚本为独立实现，未复刻第三方源码。许可证 AGPL-3.0，全文见脚本仓库根目录 LICENSE。
 
 #Requires AutoHotkey v2.0
 #SingleInstance Force
 #NoTrayIcon
+; 警告默认弹框（WarningMode=MsgBox）：脱离宿主运行时会把整台机器卡住，且文字留不下来。
+; 改 StdOut 后走 stderr／宿主控制台，永不弹窗；宿主内本来就是写日志，不受影响。
+#Warn All, StdOut
+
+; GUI 事件层（按钮 Click 等）抛的异常默认被静默吞掉，表现成「点了按钮没反应」。
+; 统一落到脚本目录的 error.log，排查时不用再靠猜。
+OnError(LogRuntimeError)
+LogRuntimeError(err, mode) {
+    dir := A_ScriptDir "\@@NAME@@"
+    ; 脚本放在只读目录（Program Files / 只读 U 盘）时这里会失败，退回 %TEMP%。
+    if !DirExist(dir)
+        try DirCreate dir
+    if !DirExist(dir)
+        dir := A_Temp
+    try {
+        FileAppend FormatTime(A_Now, "yyyy-MM-dd HH:mm:ss") " | " err.Message "`n"
+            . err.File ":" err.Line " in " err.What "`n" err.Stack "`n`n", dir "\error.log", "UTF-8"
+    }
+    return 1        ; 已处理，不再弹默认的错误对话框
+}
 
 gGui := 0, gInput := 0, gStatus := 0
 
@@ -129,6 +150,7 @@ HISTORY = """# @@NAME@@ 历史
 ## 1.0.0（@@DATE@@）
 
 - 骨架生成（m213）：§10 八色配色、1px 描边按钮、自绘状态条、`--selftest` 分支。
+- 诊断输出（§4.2）：`#Warn All, StdOut`、`OnError` 写 `error.log`。
 """
 
 README = """# @@NAME@@
