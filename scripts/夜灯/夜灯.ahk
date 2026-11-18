@@ -2,10 +2,10 @@
 ; @name         夜灯
 ; @id           night-light
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.2.4
+; @version      1.2.5
 ; @description  滑块调屏幕色温（GammaRamp），并同步写入 Windows 夜间模式设置
 ; @author       邱宗满
-; @date         2026-11-16
+; @date         2026-11-18
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -22,6 +22,10 @@
 ; 只用封版令牌（槽 BAND、滑块 FRAME 描边 + SOFT 内块）与已验证的 SS_NOTIFY + 轮询拖动，
 ; 不新增色值/字号；标题栏不再覆盖成 IDI_APPLICATION，恢复 AHK 默认图标。
 ; 关面板只关面板、脚本仍待命（Persistent），与「文件时间修改关窗即退出」是两种正确口径。
+; 1.2.5：修两处实测问题——① 全屏游戏把 gamma LUT 重置成线性，夜灯看起来凭空失效，
+; 补一个每秒回读 LUT、不一致才重写的守护；② 拖动结束后 20ms 轮询定时器没被真正关掉
+; （SetTimer 按函数对象标识，ObjBindMethod 每次 new 都是新对象），残留定时器把「在窗口外
+; 按下鼠标」当成拖动，滑块会跟着光标跑。
 
 #Requires AutoHotkey v2.0
 #SingleInstance Force
@@ -49,6 +53,12 @@ class FlatTrack {
         this.value := Max(0, Min(100, value))
         this.cb := cb
         this.dragging := false, this.dead := false
+        ; 定时器真实触发次数：只给 --selftest 用，用来证明「关掉之后它真的不再跑」。
+        this.fires := 0
+        ; SetTimer 按「函数对象本身」认计时器：ObjBindMethod 每次 new 都是一个新对象，
+        ; 用新对象 SetTimer(…, 0) 关不掉旧对象注册的那个定时器（实测：关掉后仍在跑）。
+        ; 所以轮询定时器只在建对象时生成一次，之后开/关都用这同一个 this.tickFn。
+        this.tickFn := ObjBindMethod(this, "Tick")
         ; 滑块高 th(20) 比槽高 h(10) 各高出 5px；滑块移开后腾出的那两条 5px
         ; 属于「窗口背景」，宿主不重绘这块区域 → 拖动时留下残影。
         ; 先铺一条与滑块同高的同色底衬，腾出的像素就归属一个会正常重绘的控件。
@@ -100,13 +110,16 @@ class FlatTrack {
             return
         this.dragging := true
         this.Tick()
-        SetTimer(ObjBindMethod(this, "Tick"), 20)
+        SetTimer(this.tickFn, 20)
     }
     ; Text 控件拿不到中途的 MOUSEMOVE，用 GetCursorPos + GetKeyState 轮询反而稳。
     Tick() {
-        if (this.dead || !GetKeyState("LButton", "P")) {
-            SetTimer(ObjBindMethod(this, "Tick"), 0)
+        this.fires += 1
+        ; dragging 是第二道闸：即便哪天定时器又被弄成关不掉，没有拖动意图时这里也不会
+        ; 拿光标位置去改值——1.2.5 之前「在面板外点一下鼠标，滑块跟着跳」就是漏了这道闸。
+        if (this.dead || !this.dragging || !GetKeyState("LButton", "P")) {
             this.dragging := false
+            SetTimer(this.tickFn, 0)
             return
         }
         pt := Buffer(8, 0)
@@ -136,7 +149,7 @@ class FlatTrack {
     }
     Stop() {
         this.dead := true
-        SetTimer(ObjBindMethod(this, "Tick"), 0)
+        SetTimer(this.tickFn, 0)
         this.dragging := false
     }
 }
@@ -203,14 +216,58 @@ BuildRamp(k) {
     return b
 }
 
+; 桌面 DC 的 gamma 表按色温缓存：守护每秒跑一次，没必要每次都重算 768 个采样点。
+gRampK := -1
+gRampBuf := 0
+
+DesiredRamp(k) {
+    global gRampK, gRampBuf
+    if (!gRampBuf || k != gRampK) {
+        gRampBuf := BuildRamp(k)
+        gRampK := k
+    }
+    return gRampBuf
+}
+
 ApplyRamp(k) {
-    ramp := BuildRamp(k)
+    ramp := DesiredRamp(k)
     hdc := DllCall("user32.dll\GetDC", "Ptr", 0, "Ptr")
     if !hdc
         return false
     ok := DllCall("gdi32.dll\SetDeviceGammaRamp", "Ptr", hdc, "Ptr", ramp.Ptr, "Int")
     DllCall("user32.dll\ReleaseDC", "Ptr", 0, "Ptr", hdc)
     return ok != 0
+}
+
+; 全屏（独占全屏）游戏切显示模式时，驱动会把 gamma LUT 重置回线性，我们写进去的色温
+; 就凭空消失：面板里的值还在，屏幕却白了。这里每秒回读一次当前 LUT 与目标逐字节比对，
+; 不一致才重写——正常情况只是读一次（无闪烁、无副作用），被游戏/驱动改掉后 1 秒内自愈。
+; 强度 0（6500K）时直接不管：用户选的就是关灯，别去和游戏自己的亮度设置抢 LUT。
+RampMatches(ramp) {
+    cur := Buffer(1536, 0)
+    hdc := DllCall("user32.dll\GetDC", "Ptr", 0, "Ptr")
+    if !hdc
+        return false
+    ok := DllCall("gdi32.dll\GetDeviceGammaRamp", "Ptr", hdc, "Ptr", cur.Ptr, "Int")
+    DllCall("user32.dll\ReleaseDC", "Ptr", 0, "Ptr", hdc)
+    if !ok
+        return false
+    Loop 1536 {
+        i := A_Index - 1
+        if (NumGet(cur, i, "UChar") != NumGet(ramp, i, "UChar"))
+            return false
+    }
+    return true
+}
+
+; 定时器与 WM_DISPLAYCHANGE 共用：* 吸收消息回调的四个参数，SetTimer 直调也不多传。
+GuardRamp(*) {
+    global gIntensity
+    if (gIntensity <= 0)
+        return
+    k := IntensityToKelvin(gIntensity)
+    if !RampMatches(DesiredRamp(k))
+        ApplyRamp(k)
 }
 
 IntensityToKelvin(i) {
@@ -585,7 +642,8 @@ OnScriptExit(*) {
 }
 
 ; ── 无 GUI 自测：--selftest [输出路径] ───────────────────────────────
-; 只动纯函数与 HKCU 自建键：不写真实夜间模式值、不碰屏幕 Gamma、不改 HKLM。
+; 只动纯函数、HKCU 自建键，以及一个从不 Show 的 Gui（测拖动轮询定时器的开关）：
+; 不写真实夜间模式值、不碰屏幕 Gamma（Tick 头一拍就因 LButton 未按下而退出）、不改 HKLM。
 
 if (A_Args.Length >= 1 && A_Args[1] = "--selftest")
     RunSelfTest(A_Args.Length >= 2 ? A_Args[2] : A_ScriptDir "\夜灯\selftest-result.txt")
@@ -679,6 +737,42 @@ RunSelfTest(path) {
     Emit((!KeyExists(hk) ? "PASS " : "FAIL ") "自建键清理")
     try RegDeleteKey("HKCU\Software\AHKDeck")
 
+    ; 拖动轮询定时器能不能真正关掉——1.2.5 的病灶就在这。
+    ; SetTimer 按「函数对象」认计时器，旧代码每拍都 new 一个 ObjBindMethod 去关，
+    ; 关的是不存在的那个，20ms 定时器永久残留：于是「在面板外按一下鼠标」也会被它
+    ; 当成拖动，滑块跟着光标跳。fires 记的是真实触发次数，关不掉就会一直涨。
+    ; 只动一个不 Show 的 Gui；Tick 头一拍就因为 LButton 不在按下状态而走停止分支，
+    ; 不会调用 ApplyRamp（cb 传 0）。
+    gT := Gui("+AlwaysOnTop")
+    ft := FlatTrack(gT, 16, 21, 232, 10, 50, 0)
+    ft.dragging := true
+    SetTimer(ft.tickFn, 20)
+    Sleep(100)
+    n1 := ft.fires
+    Sleep(150)
+    n2 := ft.fires
+    Emit((n1 >= 1 ? "PASS " : "FAIL ") "轮询定时器起得来（触发 " n1 " 次）")
+    Emit((n2 = n1 ? "PASS " : "FAIL ") "轮询定时器关得掉（" n1 "→" n2 "）")
+
+    ft.dead := false, ft.dragging := true
+    SetTimer(ft.tickFn, 20)
+    Sleep(100)
+    ft.Stop()
+    n3 := ft.fires
+    Sleep(150)
+    n4 := ft.fires
+    Emit((n4 = n3 ? "PASS " : "FAIL ") "Stop() 停掉轮询（" n3 "→" n4 "）")
+    gT.Destroy()
+
+    ; ramp 缓存：换色温必须重算、换回来必须与首次一致（缓存键写错会一直套错的表）。
+    ; 比的是缓冲内容而不是对象身份——判缓存对不对，看的是最终写进屏幕的那 1536 字节。
+    ; 蓝通道从偏移 1024 起、每级 2 字节，取最后一级（i=255，偏移 1534）才有可比的强度。
+    bA := NumGet(DesiredRamp(3400), 1534, "UShort")
+    bB := NumGet(DesiredRamp(2000), 1534, "UShort")
+    bC := NumGet(DesiredRamp(3400), 1534, "UShort")
+    Emit((bB < bA ? "PASS " : "FAIL ") "换色温后 ramp 重算（蓝通道 " bA "→" bB "）")
+    Emit((bC = bA ? "PASS " : "FAIL ") "换回原色温 ramp 与首次一致")
+
     fails := 0
     for ln in StrSplit(out, "`n")
         if (SubStr(ln, 1, 5) = "FAIL ")
@@ -717,4 +811,8 @@ Persistent(true)
 ; 自绘轨的点击/键盘是全局消息，注册一次即可；面板关掉后 gTrack=0，回调自行空转。
 OnMessage(0x201, OnTrackDown)
 OnMessage(0x100, OnTrackKey)
+; 全屏游戏/切分辨率会把 gamma LUT 重置成线性，夜灯看上去就失效了。守护每秒核对一次；
+; WM_DISPLAYCHANGE(0x7E) 是系统在显示模式变更时广播的，抢在下一拍定时器之前先补一次。
+SetTimer(GuardRamp, 1000)
+OnMessage(0x7E, GuardRamp)
 OnExit(OnScriptExit)
