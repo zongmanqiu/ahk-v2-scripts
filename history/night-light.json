@@ -3,6 +3,13 @@
   "id": "night-light",
   "versions": [
     {
+      "version": "1.2.5",
+      "date": "2026-11-18",
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/night-light-1.2.5/night-light.ahk",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/night-light-1.2.5/night-light.ahk",
+      "sizeKb": 28.8
+    },
+    {
       "version": "1.2.4",
       "date": "2026-11-16",
       "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/night-light-1.2.4/night-light.ahk",
