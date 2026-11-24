@@ -3,6 +3,13 @@
   "id": "file-unlock",
   "versions": [
     {
+      "version": "1.3.3",
+      "date": "2026-11-25",
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/file-unlock-1.3.3/file-unlock.ahk",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/file-unlock-1.3.3/file-unlock.ahk",
+      "sizeKb": 53.5
+    },
+    {
       "version": "1.3.2",
       "date": "2026-11-17",
       "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/file-unlock-1.3.2/file-unlock.ahk",

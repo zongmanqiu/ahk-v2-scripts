@@ -3,6 +3,13 @@
   "id": "context-menu-tidy",
   "versions": [
     {
+      "version": "1.8.1",
+      "date": "2026-11-25",
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/context-menu-tidy-1.8.1/context-menu-tidy.ahk",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/context-menu-tidy-1.8.1/context-menu-tidy.ahk",
+      "sizeKb": 145.9
+    },
+    {
       "version": "1.8.0",
       "date": "2026-11-18",
       "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/context-menu-tidy-1.8.0/context-menu-tidy.ahk",

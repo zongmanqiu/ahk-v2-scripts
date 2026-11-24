@@ -1,0 +1,13 @@
+{
+  "name": "软件卸载",
+  "id": "software-uninstall",
+  "versions": [
+    {
+      "version": "1.0.22",
+      "date": "2026-11-25",
+      "gitee": "https://gitee.com/qiuzongman/ahk-v2-scripts/releases/download/software-uninstall-1.0.22/software-uninstall.ahk",
+      "github": "https://github.com/zongmanqiu/ahk-v2-scripts/releases/download/software-uninstall-1.0.22/software-uninstall.ahk",
+      "sizeKb": 125.7
+    }
+  ]
+}
