@@ -217,6 +217,7 @@ def attach_gitee(token: str, owner: str, repo: str, rel_id: int, asset: Path,
            f'header = "Authorization: Bearer {token}"\n'
            f'form = "file=@{asset.as_posix()};filename={gitee_name}"\n')
     p = subprocess.run(["curl.exe", "-s", "-K", "-"], input=cfg, text=True,
+                       encoding="utf-8", errors="replace",
                        capture_output=True, cwd=ROOT)
     m = re.search(r'"browser_download_url"\s*:\s*"([^"]+)"', p.stdout or "")
     if not m:
