@@ -1,7 +1,9 @@
 # 脚本运行时产物（一律在 scripts/<名>/<名>/ 下，不进仓库；见开发指南 §1）
 *.ini
 selftest-result.txt
+selftest-mcp.txt
 scan-report.txt
+scripts/*/test/report.txt
 # 只忽略脚本同名产物区里的 history；仓库根 history/ 是 m221 版本历史清单，必须入库
 scripts/*/*/history/
 backup_*

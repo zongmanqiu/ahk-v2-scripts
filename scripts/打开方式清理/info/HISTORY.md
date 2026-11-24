@@ -2,6 +2,30 @@
 
 只增不改：每次发版在最上面加一段 `## <版本>（日期）`。
 
+## 1.6.2（2026-11-25）
+
+**默认排序改为「扩展名」+ 列头加排序箭头标识（对齐其它列表脚本）**
+
+- 用户实机：排序时列头没有标识，且默认没按后缀名排。原 `S.sortCol` 默认 0（不排序、无箭头）。
+- 改动：① `S` 初始化 `sortCol: 0 → 2`（扩展名列），开窗即按扩展名升序；② 新增 `UpdateHeaderArrows()`
+  （照搬软件卸载：当前排序列文字后加 "  ↑"/"  ↓"，其余列还原纯列名，只改 `.Value`、不碰 AlignHeaders 的位置）；
+  ③ BuildGui 列头创建后调一次（显示初始箭头）、`OnColClick` 末尾调一次（点击切换后刷新）。
+- 验证：run_script 实测列头显示「扩展名  ↑」、状态条「按「扩展名」升序」；门禁 FAILED:0；编码 BOM+CRLF 完好。
+- 过程插曲：第一次实跑误显示「来源 ↑」，加临时诊断确认 `sortCol` 实为 2、箭头正确——那次是宿主单实例复用了
+  旧进程状态，非代码问题；诊断已移除。
+
+## 1.6.1（2026-11-24）
+
+**接入 K51：主列表挂 `WM_NCCALCSIZE` 子类，原生滚动条残影根治（m237 全列表脚本统一）**
+
+- 原生灰条画在 ListView 非客户区，旧「ShowScrollBar 藏 + InvalidateRect 擦」只作废客户区、碰不到 NC，
+  是脆弱平衡（软件卸载 1.0.11→1.0.21 十版栽在同一根因）。本脚本用户实机虽未见残留，但用
+  `LVM_ENSUREVISIBLE` 位块拷贝、机制同源，属「条件未触发」而非「机制安全」。
+- 修法（对齐软件卸载 1.0.22）：全局 `gLvNcProc`/`gLvMainHwnd` + 顶层函数 `LvNcCalcSize`（NC 计算时临时摘
+  `WS_VSCROLL|WS_HSCROLL` 再算客户区、算完恢复）；BuildGui 双缓冲后、FlatScroll 建立前 `SetWindowSubclass`
+  挂主列表；Cleanup 里 `RemoveWindowSubclass` 摘除。`S.lv` 会被历史窗复用，故主列表句柄单独存 `gLvMainHwnd`。
+- 旧 HideNative/Repair/FlatScroll 保留作保险丝。验证：run_script rc=0 无报错、滚轮正常；门禁 FAILED:0。
+
 ## 1.6.0（2026-11-17）
 
 > 本轮修的是「备份看着有、其实还原不回来」。删除是不可逆操作，备份是唯一的退路，

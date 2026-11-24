@@ -31,11 +31,12 @@ import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-# 不进发行包的目录：
+# 不进发行包的目录/文件：
 #   info/ test/       仓库资料；
+#   AGENTS.md         目录级开发准则（2026-11-23 软件卸载起引入），同为仓库资料；
 #   <名>/             运行时产物区（自测结果、history 等）——随包发行的附属文件
 #                     （DLL、数据表）应放在 scripts/<名>/ 根，与 .ahk 同级。
-EXCLUDE_DIRS = {"info", "test"}
+EXCLUDE_DIRS = {"info", "test", "AGENTS.md"}
 
 
 def find_7z() -> str | None:

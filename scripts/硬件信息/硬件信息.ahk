@@ -2,10 +2,10 @@
 ; @name         硬件信息
 ; @id           hardware-info
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      2.3.4
+; @version      2.3.5
 ; @description  左侧导航分页查看 CPU/主板/内存/显卡/磁盘/网卡/显示器/系统，逐项列出详细规格
 ; @author       邱宗满
-; @date         2026-11-17
+; @date         2026-11-25
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -113,7 +113,7 @@ LIST_TOP := PAD
 HEAD_H := 26
 LIST_H := WIN_H - LIST_TOP - HEAD_H - PAD
 
-gGui := 0, gList := 0, gNavBtns := [], gScroll := 0
+gGui := 0, gList := 0, gNavBtns := [], gScroll := 0, gLvNcProc := 0, gLvMainHwnd := 0
 gPages := [], gCurPage := 1, gData := 0
 
 ; ── 格式化 ───────────────────────────────────────────────────────────
@@ -1390,10 +1390,36 @@ OnBarKey(wp, lp, msg, hwnd) {
         return 1
 }
 
+; ── 原生滚动条根治（K51）：ListView 的 WM_NCCALCSIZE 子类 ──────────
+; 原生灰条画在非客户区，ShowScrollBar(FALSE) 只摘样式位不擦像素、InvalidateRect(NULL) 只作废
+; 客户区，「藏完再追着擦」永远差一拍。这里在 NC 空间计算时临时摘掉 WS_VSCROLL|WS_HSCROLL 再走
+; 默认计算、算完恢复——原生条分不到 NC 空间、一个像素都画不出。滚动走 SetScrollInfo 不受影响。
+LvNcCalcSize(hwnd, msg, wParam, lParam, idSubclass, refData) {
+    if (msg = 0x0083 && wParam) {
+        v := DllCall("user32\GetWindowLongW", "Ptr", hwnd, "Int", -16, "Int")
+        if (v & 0x00300000) {
+            DllCall("user32\SetWindowLongW", "Ptr", hwnd, "Int", -16, "Int", v & 0xFFCFFFFF)
+            r := DllCall("comctl32\DefSubclassProc", "Ptr", hwnd, "UInt", msg
+                , "Ptr", wParam, "Ptr", lParam, "Ptr")
+            DllCall("user32\SetWindowLongW", "Ptr", hwnd, "Int", -16, "Int", v)
+            return r
+        }
+    }
+    return DllCall("comctl32\DefSubclassProc", "Ptr", hwnd, "UInt", msg
+        , "Ptr", wParam, "Ptr", lParam, "Ptr")
+}
+
+RemoveLvSub() {
+    global gLvNcProc, gLvMainHwnd
+    if (gLvMainHwnd && gLvNcProc)
+        try DllCall("comctl32\RemoveWindowSubclass", "Ptr", gLvMainHwnd, "Ptr", gLvNcProc, "Ptr", 1)
+}
+
 BuildGui() {
     global gGui, gList, gNavBtns, gScroll
     global gLvWhite, gLineTop, gLineBot, gLineLft, gLineRgt, gHdrBand, gHdrName, gHdrVal
     global C_BG, C_BAND, C_FRAME, C_TEXT, C_WHITE, C_ACCENT_SOFT
+    global gLvNcProc, gLvMainHwnd
     global NAV_X, NAV_W, NAV_ITEM_H, NAV_GAP, COL_NAME_W
     global WIN_W, WIN_H, LIST_X, LIST_W, LIST_TOP, HEAD_H, LIST_H, PAD
 
@@ -1402,7 +1428,7 @@ BuildGui() {
     gGui.BackColor := C_BG
     gGui.SetFont("s10", "Microsoft YaHei UI")
     ; 自绘滚动条的定时器必须先停，否则窗口销毁后还会有一拍去访问已销毁的列表控件。
-    gGui.OnEvent("Close", (*) => (gScroll ? gScroll.Stop() : 0, ExitApp()))
+    gGui.OnEvent("Close", (*) => (gScroll ? gScroll.Stop() : 0, RemoveLvSub(), ExitApp()))
 
     ; 左侧导航：不带框线，选中项整块换成 ACCENT_SOFT（比 BG 深两档），
     ; 一眼就能看出当前停在哪一页；未选中与窗口底色同色，视觉上退到背景里。
@@ -1445,6 +1471,10 @@ BuildGui() {
     gList.ModifyCol(2, LIST_W - COL_NAME_W - 4)
     ; LVS_EX_DOUBLEBUFFER：滚动重绘走后台缓冲，避免整块重画时闪一下。
     DllCall("user32\SendMessageW", "Ptr", gList.Hwnd, "UInt", 0x1036, "Ptr", 0x10000, "Ptr", 0x10000)
+    ; K51：在 FlatScroll 建立、第一次填表之前挂 WM_NCCALCSIZE 子类，从第一帧起原生条就无空间。
+    gLvMainHwnd := gList.Hwnd
+    gLvNcProc := CallbackCreate(LvNcCalcSize)
+    DllCall("comctl32\SetWindowSubclass", "Ptr", gList.Hwnd, "Ptr", gLvNcProc, "Ptr", 1, "Ptr", 0)
 
     gGui.OnEvent("Size", OnSize)
 

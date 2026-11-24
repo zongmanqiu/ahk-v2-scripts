@@ -2,10 +2,10 @@
 ; @name         文件解锁
 ; @id           file-unlock
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.3.2
+; @version      1.3.3
 ; @description  拖入文件或文件夹，自动检测占用，一键解除占用或删除（含保留名/权限受限文件）
 ; @author       邱宗满
-; @date         2026-11-17
+; @date         2026-11-25
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -71,7 +71,7 @@ CRITICAL_PROCS := Map("smss.exe", 1, "csrss.exe", 1, "wininit.exe", 1, "winlogon
     , "dwm.exe", 1, "sihost.exe", 1, "svchost.exe", 1, "audiodg.exe", 1
     , "conhost.exe", 1, "explorer.exe", 1, "System", 1, "Registry", 1)
 
-gGui := 0, gList := 0, gStatus := 0, gInfo := 0, gScroll := 0
+gGui := 0, gList := 0, gStatus := 0, gInfo := 0, gScroll := 0, gLvNcProc := 0, gLvMainHwnd := 0
 gLvWhite := 0, gLineTop := 0, gLineBot := 0, gLineLft := 0, gLineRgt := 0
 gItems := []          ; [{path, isDir, owners:[pid], names:"进程名列表"}]，每行对应一项
 
@@ -668,16 +668,42 @@ OnBarKey(wp, lp, msg, hwnd) {
 ; → 操作行(28) → BLOCK_GAP(6) → 状态条(30) → 贴窗口底。
 ; 窗口可缩放/最大化（长路径需要）：所有块由 Layout(cw,ch) 按客户区重算，
 ; 只有列表区吸收纵向余量、路径列吸收横向余量；按钮宽由文字宽定，永不被拉伸。
+; ── 原生滚动条根治（K51，范本）：ListView 的 WM_NCCALCSIZE 子类 ──────────
+; 原生灰条画在非客户区，ShowScrollBar(FALSE) 只摘样式位不擦像素、InvalidateRect(NULL) 只作废
+; 客户区，「藏完再追着擦」永远差一拍。这里在 NC 空间计算时临时摘掉 WS_VSCROLL|WS_HSCROLL 再走
+; 默认计算、算完恢复——原生条分不到 NC 空间、一个像素都画不出。滚动走 SetScrollInfo 不受影响。
+LvNcCalcSize(hwnd, msg, wParam, lParam, idSubclass, refData) {
+    if (msg = 0x0083 && wParam) {
+        v := DllCall("user32\GetWindowLongW", "Ptr", hwnd, "Int", -16, "Int")
+        if (v & 0x00300000) {
+            DllCall("user32\SetWindowLongW", "Ptr", hwnd, "Int", -16, "Int", v & 0xFFCFFFFF)
+            r := DllCall("comctl32\DefSubclassProc", "Ptr", hwnd, "UInt", msg
+                , "Ptr", wParam, "Ptr", lParam, "Ptr")
+            DllCall("user32\SetWindowLongW", "Ptr", hwnd, "Int", -16, "Int", v)
+            return r
+        }
+    }
+    return DllCall("comctl32\DefSubclassProc", "Ptr", hwnd, "UInt", msg
+        , "Ptr", wParam, "Ptr", lParam, "Ptr")
+}
+
+RemoveLvSub() {
+    global gLvNcProc, gLvMainHwnd
+    if (gLvMainHwnd && gLvNcProc)
+        try DllCall("comctl32\RemoveWindowSubclass", "Ptr", gLvMainHwnd, "Ptr", gLvNcProc, "Ptr", 1)
+}
+
 BuildGui() {
     global gGui, gList, gStatus, gInfo, gScroll
     global gLvWhite, gLineTop, gLineBot, gLineLft, gLineRgt
     global gBand, gHdrPath, gHdrType, gHdrOcc, gStBand, gBtnUnlock, gBtnDel
     global EDGE, ROW_W
+    global gLvNcProc, gLvMainHwnd
     gGui := Gui("+Resize +0x02000000", "文件解锁")   ; WS_CLIPCHILDREN：父窗口别刷在子控件上
     gGui.BackColor := "F7F9FC"
     gGui.SetFont("s10", "Microsoft YaHei UI")
     ; 自绘滚动条定时器必须先停，否则关窗后还会有一拍访问已销毁的列表（K21）。
-    gGui.OnEvent("Close", (*) => (gScroll ? gScroll.Stop() : 0, ExitApp()))
+    gGui.OnEvent("Close", (*) => (gScroll ? gScroll.Stop() : 0, RemoveLvSub(), ExitApp()))
     gGui.OnEvent("DropFiles", OnDropFiles)
     gGui.OnEvent("Size", OnSize)
 
@@ -701,6 +727,10 @@ BuildGui() {
         , ["路径", "类型", "占用程序"])
     ; LVS_EX_DOUBLEBUFFER：滚动重绘走后台缓冲，避免整块重画闪一下（K44）。
     DllCall("user32\SendMessageW", "Ptr", gList.Hwnd, "UInt", 0x1036, "Ptr", 0x10000, "Ptr", 0x10000)
+    ; K51：在 FlatScroll 建立、第一次填表之前挂 WM_NCCALCSIZE 子类，从第一帧起原生条就无空间。
+    gLvMainHwnd := gList.Hwnd
+    gLvNcProc := CallbackCreate(LvNcCalcSize)
+    DllCall("comctl32\SetWindowSubclass", "Ptr", gList.Hwnd, "Ptr", gLvNcProc, "Ptr", 1, "Ptr", 0)
 
     gInfo := gGui.Add("Text", "x" EDGE " y288 w474 h" H_ACTION " BackgroundF7F9FC c202B3A +0x200", "")
     gBtnUnlock := FlatButton(gGui, 506, 288, MeasureTextWidth("解除占用") + 32, H_ACTION

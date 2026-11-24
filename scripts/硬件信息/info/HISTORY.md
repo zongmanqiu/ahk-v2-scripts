@@ -1,5 +1,16 @@
 # 硬件信息 版本历史
 
+## 2.3.5（2026-11-25）
+
+**接入 K51：列表挂 `WM_NCCALCSIZE` 子类，原生滚动条残影根治（m237 全列表脚本统一）**
+
+- 原生灰条画在 ListView 非客户区，旧「藏 + 客户区擦 + gLvWhite 底块」是脆弱平衡。本脚本以
+  `LVM_SCROLL` 为主、残影风险低，但作为「全列表脚本统一」一并升级到机制安全的标准配方。
+- 修法（对齐软件卸载 1.0.22）：全局 `gLvNcProc`/`gLvMainHwnd` + 顶层函数 `LvNcCalcSize` + `RemoveLvSub`；
+  BuildGui 双缓冲后、FlatScroll 建立前 `SetWindowSubclass` 挂上；Close 退出前 `RemoveLvSub()` 摘除。
+  旧 HideNative/Repair/白底块保留作保险丝。
+- 验证：run_script rc=0 无报错；门禁 FAILED:0；编码 CRLF 保持原状（本脚本无 BOM）。
+
 ## 2.3.4（2026-11-17）
 
 > 四条都是「本机恰好没露馅」的类型：单显 VGA、单类 WMI 都正常时看不出来。

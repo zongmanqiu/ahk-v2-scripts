@@ -2,6 +2,16 @@
 
 只增不改：每次发版在最上面加一段 `## <版本>（日期）`。
 
+## 1.8.1（2026-11-24）
+
+**接入 K51：主列表挂 `WM_NCCALCSIZE` 子类，原生滚动条残影根治（m237 全列表脚本统一）**
+
+- 原生灰条画在 ListView 非客户区，旧「藏 + 客户区擦」是脆弱平衡（软件卸载十版栽在同一根因）。
+  本脚本 `LVM_ENSUREVISIBLE` 同源，属「条件未触发」而非「机制安全」。
+- 修法（对齐软件卸载 1.0.22）：全局 `gLvNcProc`/`gLvMainHwnd` + 顶层函数 `LvNcCalcSize` + `RemoveLvSub`；
+  BuildGui 双缓冲后、FlatScroll 建立前 `SetWindowSubclass` 挂主列表；Close 退出前 `RemoveLvSub()` 摘除。
+- 旧 HideNative/Repair/FlatScroll 保留作保险丝。验证：run_script rc=0 无报错；门禁 ALL PASS；编码 BOM+CRLF 完好。
+
 ## 1.8.0（2026-11-18）
 
 用户提了四件事：菜单内容「常缺东西 / 有错误 / 名字不对」；脚本托盘齿轮弹出的选项

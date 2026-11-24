@@ -2,6 +2,17 @@
 
 只增不改：每次发版在最上面加一段 `## <版本>（日期）`。
 
+## 2.4.8（2026-11-24）
+
+**接入 K51：列表挂 `WM_NCCALCSIZE` 子类，原生滚动条残影根治（m237 全列表脚本统一）**
+
+- 原生灰条画在 ListView 非客户区，旧「藏 + 客户区擦」是脆弱平衡（软件卸载十版栽在同一根因）。
+  本脚本 `LVM_ENSUREVISIBLE` 同源，属「条件未触发」而非「机制安全」。
+- 修法（对齐软件卸载 1.0.22）：全局 `gLvNcProc`/`gLvMainHwnd` + 顶层函数 `LvNcCalcSize` + `RemoveLvSub`；
+  BuildGui ListView 创建后、FlatScroll 建立前 `SetWindowSubclass` 挂上；Close 退出前 `RemoveLvSub()` 摘除。
+  BuildGui 用裸 `global`，无需补声明。旧 HideNative/Repair 保留作保险丝。
+- 验证：run_script rc=0 无报错；门禁 FAILED:0；编码 CRLF 完好（本脚本无 BOM，保持原状）。
+
 ## 2.4.7（2026-11-13）
 
 - **修复：点自绘勾选框会直接崩掉脚本**。`FlatCheck` 把回调存进对象属性后写成

@@ -2,10 +2,10 @@
 ; @name         右键菜单整理
 ; @id           context-menu-tidy
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.8.0
+; @version      1.8.1
 ; @description  拖入文件/文件夹读出它的右键菜单，或看桌面空白/文件夹空白的菜单，逐项隐藏、逐位调顺序、新增自定义命令项，只写 HKCU 随时可恢复
 ; @author       邱宗满
-; @date         2026-11-18
+; @date         2026-11-25
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -870,7 +870,7 @@ SureViewBuiltins(list, sceneKey) {
 
 ; ── 全局状态 ────────────────────────────────────────────────────────────
 global gGui := 0, gList := 0, gStatus := 0, gNavBtns := []
-global gItems := [], gScene := 1, gScroll := 0
+global gItems := [], gScene := 1, gScroll := 0, gLvNcProc := 0, gLvMainHwnd := 0
 ; 过滤后 ListView 行号与 gItems 的下标不再一一对应，另存一份「行号 -> 项」。
 global gRowMap := []
 global gDropPath := ""
@@ -2635,12 +2635,37 @@ OnDropFiles(guiObj, ctrlObj, files, x, y) {
     RefreshItems()
 }
 
+; ── 原生滚动条根治（K51）：ListView 的 WM_NCCALCSIZE 子类 ──────────
+; 原生灰条画在非客户区，ShowScrollBar(FALSE) 只摘样式位不擦像素、InvalidateRect(NULL) 只作废
+; 客户区，「藏完再追着擦」永远差一拍。这里在 NC 空间计算时临时摘掉 WS_VSCROLL|WS_HSCROLL 再走
+; 默认计算、算完恢复——原生条分不到 NC 空间、一个像素都画不出。滚动走 SetScrollInfo 不受影响。
+LvNcCalcSize(hwnd, msg, wParam, lParam, idSubclass, refData) {
+    if (msg = 0x0083 && wParam) {
+        v := DllCall("user32\GetWindowLongW", "Ptr", hwnd, "Int", -16, "Int")
+        if (v & 0x00300000) {
+            DllCall("user32\SetWindowLongW", "Ptr", hwnd, "Int", -16, "Int", v & 0xFFCFFFFF)
+            r := DllCall("comctl32\DefSubclassProc", "Ptr", hwnd, "UInt", msg
+                , "Ptr", wParam, "Ptr", lParam, "Ptr")
+            DllCall("user32\SetWindowLongW", "Ptr", hwnd, "Int", -16, "Int", v)
+            return r
+        }
+    }
+    return DllCall("comctl32\DefSubclassProc", "Ptr", hwnd, "UInt", msg
+        , "Ptr", wParam, "Ptr", lParam, "Ptr")
+}
+
+RemoveLvSub() {
+    global gLvNcProc, gLvMainHwnd
+    if (gLvMainHwnd && gLvNcProc)
+        try DllCall("comctl32\RemoveWindowSubclass", "Ptr", gLvMainHwnd, "Ptr", gLvNcProc, "Ptr", 1)
+}
+
 BuildGui() {
-    global gGui, gList, gStatus, gNavBtns, gScroll, gToggleBtn, gCheck, gHeadBlocks
+    global gGui, gList, gStatus, gNavBtns, gScroll, gToggleBtn, gCheck, gHeadBlocks, gLvNcProc, gLvMainHwnd
     gGui := Gui("", "右键菜单整理")
     gGui.BackColor := "F7F9FC"
     gGui.SetFont("s10", "Microsoft YaHei UI")
-    gGui.OnEvent("Close", (*) => (gScroll ? gScroll.Stop() : 0, ExitApp()))
+    gGui.OnEvent("Close", (*) => (gScroll ? gScroll.Stop() : 0, RemoveLvSub(), ExitApp()))
     gGui.OnEvent("DropFiles", OnDropFiles)
 
     gNavBtns := []
@@ -2695,6 +2720,10 @@ BuildGui() {
     gList.ModifyCol(1, COL_ORD_W), gList.ModifyCol(2, COL_NAME_W), gList.ModifyCol(3, COL_SRC_W)
     gList.ModifyCol(4, COL_CAP_W), gList.ModifyCol(5, COL_STATE_W)
     DllCall("user32\SendMessageW", "Ptr", gList.Hwnd, "UInt", 0x1036, "Ptr", 0x10000, "Ptr", 0x10000)
+    ; K51：在 FlatScroll 建立、第一次填表之前挂 WM_NCCALCSIZE 子类，从第一帧起原生条就无空间。
+    gLvMainHwnd := gList.Hwnd
+    gLvNcProc := CallbackCreate(LvNcCalcSize)
+    DllCall("comctl32\SetWindowSubclass", "Ptr", gList.Hwnd, "Ptr", gLvNcProc, "Ptr", 1, "Ptr", 0)
 
     ; 五个按钮同宽同距：状态切换（一个按钮两态）、上移、下移、新增、刷新。
     ; 1.8.0 用户裁决删掉「恢复」：它只撤销顺序接管，没调过序就毫无反应，看着像死按钮；

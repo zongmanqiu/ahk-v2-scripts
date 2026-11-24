@@ -1,11 +1,11 @@
-; ==UserScript==
+﻿; ==UserScript==
 ; @name         打开方式清理
 ; @id           open-with-cleaner
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      1.6.0
+; @version      1.6.2
 ; @description  扫描 Windows「打开方式」相关的 13 处注册表位置，列出并清理失效残留
 ; @author       邱宗满
-; @date         2026-11-17
+; @date         2026-11-25
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -614,7 +614,7 @@ S := {
     fTop: 0, fBot: 0, fLft: 0, fRgt: 0,
     hdr: [], hdrBand: 0, colW: [],
     scanning: false, steps: [], step: 0, t0: 0, scanMs: 0,
-    sortCol: 0, sortDesc: false, mutex: 0, nextEid: 1,
+    sortCol: 2, sortDesc: false, mutex: 0, nextEid: 1,
     histGui: 0, histList: 0, histFiles: [], histView: 0, histRestore: 0, histDirty: false
 }
 gSortRank := Map()
@@ -622,6 +622,10 @@ gSortCb := 0
 ; --selftest / --report 不走 BuildGui，gScroll 一直为空；AHK v2 读「声明过但未赋值」
 ; 的 global 会抛错（不是空值），所以必须在这里给初值，UpdateStatus 的守卫才安全。
 gScroll := 0
+; K51 原生滚动条残影根治：主列表挂 WM_NCCALCSIZE 子类的回调句柄 + 主列表句柄。
+; S.lv 会被历史窗口的 ListView 复用覆盖，所以主列表句柄单独存住，退出时按它摘子类。
+gLvNcProc := 0
+gLvMainHwnd := 0
 
 if (A_Args.Length >= 1 && A_Args[1] = "--report") {
     RunReport(A_Args.Length >= 2 ? A_Args[2] : A_ScriptDir "\打开方式清理\scan-report.txt")
@@ -1138,7 +1142,7 @@ ScanTick() {
 ; ── 主窗口 ──────────────────────────────────────────────────────────
 
 BuildGui() {
-    global S, gScroll, HDR
+    global S, gScroll, HDR, gLvNcProc, gLvMainHwnd
     ; 版式照 开发指南 §10：客户区 1100×650，行宽 1068（1100−16×2）。工具行
     ; 58+58+96+32+516+84+84+84 + 7×8 = 1068；按钮宽由文字定，搜索框吃余量。
     ; 列表区靠 FRAME 父块露 1px 线，状态条贴窗口底 h30，caption 与它同为 #DCE8F7。
@@ -1180,6 +1184,7 @@ BuildGui() {
     g.SetFont("s10 Norm", "Microsoft YaHei UI")
     for i, c in S.hdr
         c.OnEvent("Click", HeaderClick(i))
+    UpdateHeaderArrows()   ; 开窗即显示默认排序（扩展名↑）标识
 
     S.lv := g.Add("ListView", "x17 y73 w1066 h540 Checked -Grid -Multi -Hdr -E0x200 BackgroundFFFFFF c202B3A", HDR)
     S.lv.OnEvent("DoubleClick", OnRowDouble)
@@ -1188,6 +1193,11 @@ BuildGui() {
     ; 驱动（LVM_ENSUREVISIBLE），没有这一位时滚动后的整行重绘会和位块拷贝的残留
     ; 叠在一起 —— 实测零星几行的文字只剩半截（勾选框一起缺），必须开。
     DllCall("user32\SendMessageW", "Ptr", S.lv.Hwnd, "UInt", 0x1036, "Ptr", 0x10000, "Ptr", 0x10000)
+
+    ; K51：在 FlatScroll 建立、第一次 Layout/填表之前挂 WM_NCCALCSIZE 子类，从第一帧起原生条就无空间。
+    gLvMainHwnd := S.lv.Hwnd
+    gLvNcProc := CallbackCreate(LvNcCalcSize)
+    DllCall("comctl32\SetWindowSubclass", "Ptr", S.lv.Hwnd, "Ptr", gLvNcProc, "Ptr", 1, "Ptr", 0)
 
     ; 原生滚动条由主题引擎画且拿不到颜色，整段复用已验证的 FlatScroll（槽 BAND / 滑块 ACCENT）。
     gScroll := FlatScroll(g, S.lv, 17, 73, 1066, 540)
@@ -1205,10 +1215,31 @@ BuildGui() {
     OnGuiSize(g, 0, cw, ch)
 }
 
+; ── 原生滚动条根治（K51）：ListView 的 WM_NCCALCSIZE 子类 ──────────
+; 原生灰条画在非客户区，ShowScrollBar(FALSE) 只摘样式位不擦像素、InvalidateRect(NULL) 只作废
+; 客户区，「藏完再追着擦」永远差一拍。这里在 NC 空间计算时临时摘掉 WS_VSCROLL|WS_HSCROLL 再走
+; 默认计算、算完恢复——原生条分不到 NC 空间、一个像素都画不出。滚动走 SetScrollInfo 不受影响。
+LvNcCalcSize(hwnd, msg, wParam, lParam, idSubclass, refData) {
+    if (msg = 0x0083 && wParam) {
+        v := DllCall("user32\GetWindowLongW", "Ptr", hwnd, "Int", -16, "Int")
+        if (v & 0x00300000) {
+            DllCall("user32\SetWindowLongW", "Ptr", hwnd, "Int", -16, "Int", v & 0xFFCFFFFF)
+            r := DllCall("comctl32\DefSubclassProc", "Ptr", hwnd, "UInt", msg
+                , "Ptr", wParam, "Ptr", lParam, "Ptr")
+            DllCall("user32\SetWindowLongW", "Ptr", hwnd, "Int", -16, "Int", v)
+            return r
+        }
+    }
+    return DllCall("comctl32\DefSubclassProc", "Ptr", hwnd, "UInt", msg
+        , "Ptr", wParam, "Ptr", lParam, "Ptr")
+}
+
 Cleanup(*) {
-    global S, gSortCb, gScroll
+    global S, gSortCb, gScroll, gLvNcProc, gLvMainHwnd
     if gScroll
         gScroll.Stop()
+    if (gLvMainHwnd && gLvNcProc)
+        try DllCall("comctl32\RemoveWindowSubclass", "Ptr", gLvMainHwnd, "Ptr", gLvNcProc, "Ptr", 1)
     if gSortCb
         CallbackFree(gSortCb)
     if S.mutex
@@ -1429,6 +1460,15 @@ SortView() {
         S.view := out
 }
 
+; 列头排序标识：当前排序列文字后加箭头（升 ↑ / 降 ↓），其余列还原纯列名。
+; 照搬软件卸载 UpdateHeaderArrows 的做法——只改 .Value，列头位置由 AlignHeaders 单独管，互不覆盖。
+UpdateHeaderArrows() {
+    global S
+    mark := (S.sortDesc ? "  ↓" : "  ↑")
+    for i, c in S.hdr
+        c.Value := (i = S.sortCol ? HDR[i] mark : HDR[i])
+}
+
 OnColClick(ctrl, col) {
     global S
     if (col = S.sortCol)
@@ -1439,6 +1479,7 @@ OnColClick(ctrl, col) {
     SortView()
     SortListInPlace()
     UpdateStatus()
+    UpdateHeaderArrows()
 }
 
 ; 排序口径仍由 SortView（AHK Sort）给出；这里只把目标名次交给 comctl32 原地重排，

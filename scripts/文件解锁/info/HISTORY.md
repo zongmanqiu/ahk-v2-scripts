@@ -2,6 +2,17 @@
 
 只增不改：每次发版在最上面加一段 `## <版本>（日期）`。
 
+## 1.3.3（2026-11-24）
+
+**接入 K51：列表挂 `WM_NCCALCSIZE` 子类，原生滚动条残影根治（m237 全列表脚本统一）**
+
+- 本脚本是列表脚本的**范本**（AGENTS.md 第11条 / 开发指南：新脚本抄文件解锁）。原用 `LVM_SCROLL` +
+  `gLvWhite` 白底块，残影风险低，但「藏 + 擦 + 底块」仍是脆弱平衡；作为范本更应带上机制安全的标准配方。
+- 修法（对齐软件卸载 1.0.22）：全局 `gLvNcProc`/`gLvMainHwnd` + 顶层函数 `LvNcCalcSize` + `RemoveLvSub`；
+  BuildGui 双缓冲后、FlatScroll 建立前 `SetWindowSubclass` 挂上；Close 退出前 `RemoveLvSub()` 摘除。
+  旧 HideNative/Repair/白底块保留作保险丝。**范本从此自带 K51 配方，new_script 抄它即合规。**
+- 验证：run_script rc=0 无报错；门禁 ALL PASS；编码 LF 无 BOM 保持原状。
+
 ## 1.3.2（2026-11-17）
 
 按反馈修 1.3.1 缩放时按钮堆成竖条纹的问题。MCP 实测定位，全程不改宿主。

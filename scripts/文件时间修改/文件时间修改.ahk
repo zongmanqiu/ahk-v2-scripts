@@ -2,10 +2,10 @@
 ; @name         文件时间修改
 ; @id           file-time-modifier
 ; @namespace    https://gitee.com/qiuzongman/ahk-v2-scripts
-; @version      2.4.7
+; @version      2.4.8
 ; @description  拖入文件或文件夹，点「更新时间」后设定创建/修改/访问时间；勾选「包含子文件（夹）」才连同内部所有文件与子文件夹一起生效
 ; @author       邱宗满
-; @date         2026-11-13
+; @date         2026-11-25
 ; @license      AGPL-3.0
 ; @homepageURL  https://gitee.com/qiuzongman/ahk-v2-scripts
 ; @requires     AutoHotkey v2.0
@@ -32,7 +32,7 @@ global gDayM := 0, gDayC := 0, gDayA := 0
 global gTimeM := 0, gTimeC := 0, gTimeA := 0
 global gChkRec := 0
 global gBtnApply := 0, gBtnClear := 0
-global gSeen := Map(), gScroll := 0
+global gSeen := Map(), gScroll := 0, gLvNcProc := 0, gLvMainHwnd := 0
 
 ; 系统 CheckBox 在宿主里是经典黑勾方框，样式位去不掉，改成三层 Text 色块自绘；
 ; Value 保持 0/1 语义，方框与文字都能点击切换。类声明是运行期语句、不会被提升，
@@ -616,6 +616,31 @@ FlatButton(g, x, y, w, h, text, fill, edge, cb) {
     return b
 }
 
+; ── 原生滚动条根治（K51）：ListView 的 WM_NCCALCSIZE 子类 ──────────
+; 原生灰条画在非客户区，ShowScrollBar(FALSE) 只摘样式位不擦像素、InvalidateRect(NULL) 只作废
+; 客户区，「藏完再追着擦」永远差一拍。这里在 NC 空间计算时临时摘掉 WS_VSCROLL|WS_HSCROLL 再走
+; 默认计算、算完恢复——原生条分不到 NC 空间、一个像素都画不出。滚动走 SetScrollInfo 不受影响。
+LvNcCalcSize(hwnd, msg, wParam, lParam, idSubclass, refData) {
+    if (msg = 0x0083 && wParam) {
+        v := DllCall("user32\GetWindowLongW", "Ptr", hwnd, "Int", -16, "Int")
+        if (v & 0x00300000) {
+            DllCall("user32\SetWindowLongW", "Ptr", hwnd, "Int", -16, "Int", v & 0xFFCFFFFF)
+            r := DllCall("comctl32\DefSubclassProc", "Ptr", hwnd, "UInt", msg
+                , "Ptr", wParam, "Ptr", lParam, "Ptr")
+            DllCall("user32\SetWindowLongW", "Ptr", hwnd, "Int", -16, "Int", v)
+            return r
+        }
+    }
+    return DllCall("comctl32\DefSubclassProc", "Ptr", hwnd, "UInt", msg
+        , "Ptr", wParam, "Ptr", lParam, "Ptr")
+}
+
+RemoveLvSub() {
+    global gLvNcProc, gLvMainHwnd
+    if (gLvMainHwnd && gLvNcProc)
+        try DllCall("comctl32\RemoveWindowSubclass", "Ptr", gLvMainHwnd, "Ptr", gLvNcProc, "Ptr", 1)
+}
+
 BuildGui() {
     global
     ; 版式照 开发指南 §10：客户区 420，内容行 x16 w388（420-16*2）；同排控件同 y 同 h，
@@ -625,7 +650,7 @@ BuildGui() {
     gGui.SetFont("s10", "Microsoft YaHei UI")
     ; 窗口是本脚本唯一入口：关掉窗口就该退出，不能只 Destroy 让脚本继续挂着。
     ; gScroll 的 Sync 定时器必须先停，否则 ExitApp 之外还会留一拍访问已销毁控件（K21）。
-    gGui.OnEvent("Close", (*) => (gScroll.Stop(), ExitApp()))
+    gGui.OnEvent("Close", (*) => (gScroll.Stop(), RemoveLvSub(), ExitApp()))
     gGui.OnEvent("DropFiles", OnDropFiles)
 
     gGui.SetFont("s10 Bold", "Microsoft YaHei UI")
@@ -663,6 +688,10 @@ BuildGui() {
     gList := gGui.Add("ListView", "x17 y159 w386 h178 -Hdr -E0x200 BackgroundFFFFFF c202B3A", ["路径"])
     ; 未解锁条已取消，樚向条不能滚动，列宽放进视口＋
     gList.ModifyCol(1, 376)
+    ; K51：在 FlatScroll 建立、第一次填表之前挂 WM_NCCALCSIZE 子类，从第一帧起原生条就无空间。
+    gLvMainHwnd := gList.Hwnd
+    gLvNcProc := CallbackCreate(LvNcCalcSize)
+    DllCall("comctl32\SetWindowSubclass", "Ptr", gList.Hwnd, "Ptr", gLvNcProc, "Ptr", 1, "Ptr", 0)
     gScroll := FlatScroll(gGui, gList, 17, 159, 386, 178)
 
     gChkRec := FlatCheck(gGui, 16, 344, 168, 28, "包含子文件（夹）", false)
