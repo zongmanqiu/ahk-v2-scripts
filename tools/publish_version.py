@@ -24,6 +24,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import urllib.parse
@@ -319,6 +320,14 @@ def main() -> int:
                 f"{asset.name} 是残留旧包，拒绝发布（请检查 scripts/{args.script}/ 源码）")
     else:
         asset = ahk
+
+    # curl.exe / gh 读不了中文本地路径（curl error 26：Failed to open local data）。
+    # 上传前把附件复制成 ASCII 临时名（.temp 已 gitignore），两端都传这份。
+    ascii_asset = ROOT / ".temp" / f"{ident}{asset.suffix}"
+    ascii_asset.parent.mkdir(exist_ok=True)
+    shutil.copyfile(asset, ascii_asset)
+    asset = ascii_asset
+
     print(f"脚本={args.script} id={ident} 版本={ver} tag={tag}")
     print(f"附件={asset.relative_to(ROOT)}  分支={branch}  模式={'APPLY' if args.Apply else 'dry-run'}")
     print(f"发布说明（{len(notes)} 字符，脱敏）：\n{notes[:200]}...\n")
